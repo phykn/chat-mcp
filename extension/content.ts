@@ -39,6 +39,11 @@ async function execute(msg: any) {
         if (s.generating || !b.draftHash || !s.draft.trim() ||
             !sameBaseline(s.messages.map(m => m.id), b.baseline) || await fingerprint(s.draft) !== b.draftHash)
           throw fault('NOT_OWNER', 'No unchanged draft belonging to this request is visible.');
+        // Hashing yields to the page: the user may type or switch chats meanwhile.
+        const after = browserSnapshot();
+        if (!after.ordinary || after.url !== s.url || after.generating || after.draft !== s.draft ||
+            !sameBaseline(after.messages.map(m => m.id), b.baseline))
+          throw fault('NOT_OWNER', 'The draft or conversation changed during cancellation.');
         const editor = document.querySelector<HTMLElement>('#prompt-textarea')!;
         editor.focus();
         const range = document.createRange(); range.selectNodeContents(editor);

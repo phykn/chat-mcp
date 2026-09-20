@@ -5,6 +5,55 @@ import { readFile } from 'node:fs/promises';
 import { hash } from '../src/core/store.js';
 import { normalizeDraft } from '../src/core/text.js';
 
+test('user changes during the draft ownership check prevent cancellation', async t => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    for (const change of ['typing', 'navigation', 'mode', 'generation', 'messages']) await t.test(change, async () => {
+      const page = await browser.newPage();
+      await page.addInitScript('window.__name = fn => fn');
+      await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html>
+        <button role="radio" aria-checked="true">Chat</button>
+        <div id="prompt-textarea" contenteditable="true">[owned] draft</div>
+        <button id="composer-submit-button" aria-label="Send prompt">Send</button>` }));
+      await page.goto('https://chatgpt.com/');
+      await page.evaluate(() => {
+        (window as any).chrome = { runtime: { onMessage: { addListener: (fn: any) => (window as any).handler = fn } } };
+        const digest = crypto.subtle.digest.bind(crypto.subtle);
+        crypto.subtle.digest = async (...args: Parameters<typeof digest>) => {
+          (window as any).checking = true;
+          await new Promise<void>(resolve => (window as any).resume = resolve);
+          return digest(...args);
+        };
+      });
+      await page.addScriptTag({ content: await readFile('extension/content.js', 'utf8') });
+      const binding = { url: 'https://chatgpt.com/', baseline: [], marker: '[owned]', draftHash: hash('[owned] draft') };
+      const pending = page.evaluate(binding => new Promise<any>(resolve =>
+        (window as any).handler({ command: 'cancel', args: { binding } }, {}, resolve)), binding);
+      await page.waitForFunction(() => (window as any).checking);
+      if (change === 'typing') {
+        await page.locator('#prompt-textarea').press('End');
+        await page.locator('#prompt-textarea').pressSequentially(' user edit');
+      }
+      await page.evaluate(change => {
+        if (change === 'navigation') history.replaceState(null, '', '/c/another-chat');
+        if (change === 'mode') document.querySelector('[role="radio"]')!.setAttribute('aria-checked', 'false');
+        if (change === 'generation') document.querySelector('#composer-submit-button')!.setAttribute('aria-label', 'Stop response');
+        if (change === 'messages') {
+          const user = document.createElement('div');
+          user.setAttribute('data-message-author-role', 'user');
+          user.setAttribute('data-message-id', 'manual-message');
+          document.body.append(user);
+        }
+        (window as any).resume();
+      }, change);
+      const result = await pending;
+      assert.equal(result.error?.code, 'NOT_OWNER');
+      assert.equal(await page.locator('#prompt-textarea').innerText(), '[owned] draft' + (change === 'typing' ? ' user edit' : ''));
+      await page.close();
+    });
+  } finally { await browser.close(); }
+});
+
 // Entire page is an offline fixture, including its https://chatgpt.com origin.
 test('extension DOM path: mode, multiline readback, ownership, draft and completion', async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
