@@ -3,10 +3,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { Store, hash } from './store.js';
 import { Fault, type Adapter, type Record, type Material, type Snapshot } from './types.js';
 import { normalizeDraft } from './text.js';
+import { isTerminal, isPending, isCancellable } from './request.js';
 
-const pending = (r: Record) => ['sending', 'sent', 'unknown_commit', 'timed_out_after_send'].includes(r.status);
-const failedDraft = (r: Record) => r.status === 'failed' && !!r.binding?.draftHash &&
-  ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE'].includes(r.error?.code || '');
 export class Orchestrator {
   constructor(public store: Store, public adapter: Adapter,
     public timeout = 300_000, public poll = 750, public stable = 1_500) {}
@@ -18,14 +16,14 @@ export class Orchestrator {
       const digest = hash(input);
       r = await this.store.read(input.request_id);
       if (r && r.hash !== digest) throw new Fault('REQUEST_ID_CONFLICT', 'Same request_id has different input.');
-      if (r && ['completed', 'cancelled', 'failed'].includes(r.status)) return r;
-      if (r && pending(r)) {
+      if (r && isTerminal(r)) return r;
+      if (r && isPending(r)) {
         r.status = r.status === 'sending' ? 'unknown_commit' : r.status;
         await this.store.write(r);
         return await this.wait(r);
       }
       const records = await this.store.records();
-      if (records.some(x => x.id !== input.request_id && pending(x)))
+      if (records.some(x => x.id !== input.request_id && isPending(x)))
         throw new Fault('BUSY', 'Resolve the outstanding request using the same request_id or cancel it first.');
       let url: string | undefined;
       if (input.conversation_handle) {
@@ -44,7 +42,7 @@ export class Orchestrator {
       const text = `${r.binding!.marker}\n${material.prompt}`.trim();
       r.binding!.draftHash = hash(normalizeDraft(text));
       await this.store.write(r);
-      if (await this.store.cancelled(r.id)) { r.status = 'cancelled'; await this.store.write(r); return r; }
+      if (await this.store.cancelled(r.id)) return await this.finish(r, 'cancelled');
       r.status = 'sending';
       await this.store.write(r);
       try { await this.adapter.send(text, r.binding!); }
@@ -60,7 +58,7 @@ export class Orchestrator {
       return await this.wait(r);
     } catch (e) {
       if (e instanceof Fault && e.code === 'REQUEST_ID_CONFLICT') throw e;
-      if (!r || ['completed', 'cancelled', 'failed'].includes(r.status)) throw e;
+      if (!r || isTerminal(r)) throw e;
       const err = e instanceof Fault ? e : new Fault('UI_ERROR', String(e));
       r.error = { code: err.code, message: err.message };
       r.status = r.status === 'prepared' ? 'failed' : r.binding?.userId ? 'timed_out_after_send' : 'unknown_commit';
@@ -114,16 +112,14 @@ export class Orchestrator {
       if (r.binding?.userId && r.status !== 'sent') { r.status = 'sent'; r.error = undefined; await this.store.write(r); }
       if (await this.store.cancelled(r.id)) {
         await this.adapter.cancel(r.binding!);
-        r.status = 'cancelled'; r.answer = answer?.text; r.error = undefined;
-        r.elapsed_ms = Date.now() - r.started; await this.store.write(r); return r;
+        return await this.finish(r, 'cancelled', answer?.text);
       }
       if (s.error) throw new Fault('APP_ERROR', s.error);
       const fingerprint = answer ? hash(answer) : '';
       if (fingerprint !== last || s.generating || !answer?.complete) { last = fingerprint; stableSince = Date.now(); }
       if (answer?.text && answer.complete && !s.generating && Date.now() - stableSince >= this.stable &&
           !new URL(s.url).pathname.startsWith('/c/WEB:')) {
-        r.status = 'completed'; r.answer = answer.text; r.error = undefined;
-        r.elapsed_ms = Date.now() - r.started; await this.store.write(r); return r;
+        return await this.finish(r, 'completed', answer.text);
       }
       await sleep(this.poll);
     }
@@ -136,7 +132,7 @@ export class Orchestrator {
   async cancel(id: string) {
     const r = await this.store.read(id);
     if (!r) throw new Fault('NOT_FOUND', 'Unknown request_id.');
-    if (!pending(r) && r.status !== 'prepared' && !failedDraft(r)) return r;
+    if (!isCancellable(r)) return r;
     await this.store.requestCancel(id);
     // The active worker polls this durable signal without queuing behind its own lock.
     let release;
@@ -144,17 +140,21 @@ export class Orchestrator {
     catch (e) { if (e instanceof Fault && e.code === 'BUSY') return { request_id: id, status: 'cancel_requested' }; throw e; }
     try {
       const current = (await this.store.read(id))!;
-      if (current.status === 'prepared') {
-        current.status = 'cancelled'; current.error = undefined;
-        current.elapsed_ms = Date.now() - current.started;
-        await this.store.write(current); return current;
-      }
-      if (!pending(current) && !failedDraft(current)) return current;
+      if (current.status === 'prepared') return await this.finish(current, 'cancelled');
+      if (!isCancellable(current)) return current;
       const s = await this.adapter.snapshot();
       const answer = this.match(current, s);
       await this.adapter.cancel(current.binding!);
-      current.status = 'cancelled'; current.answer = answer?.text; current.error = undefined;
-      await this.store.write(current); return current;
+      return await this.finish(current, 'cancelled', answer?.text);
     } finally { await release(); }
+  }
+
+  private async finish(r: Record, status: 'completed' | 'cancelled', answer?: string) {
+    r.status = status;
+    r.answer = answer;
+    r.error = undefined;
+    r.elapsed_ms = Date.now() - r.started;
+    await this.store.write(r);
+    return r;
   }
 }

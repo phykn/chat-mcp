@@ -2,10 +2,11 @@ import { join } from 'node:path';
 import { dataDir } from './config.js';
 import { Fault, type Adapter } from './core/types.js';
 import type { Store } from './core/store.js';
+import { isUnresolved } from './core/request.js';
 
 export async function health(store: Store, adapter: Adapter) {
   const records = (await store.records()).sort((a, b) => b.updated - a.updated);
-  const pending = records.filter(r => ['prepared', 'sending', 'sent', 'unknown_commit', 'timed_out_after_send'].includes(r.status));
+  const pending = records.filter(isUnresolved);
   const recent = [...pending, ...records.filter(r => !pending.includes(r)).slice(0, 5)];
   const requests = recent.map(r => ({ request_id: r.id, status: r.status, conversation_handle: r.handle, error: r.error }));
   try {

@@ -49,6 +49,20 @@ async function disk(root: string, path: string) {
     return decode(await readFile(actual));
   } catch (e: any) { if (e.code === 'ENOENT') return null; throw e; }
 }
+async function gitFile(root: string, path: string, ref: string | undefined, files: string[]) {
+  const entry = ref
+    ? await git(root, ['ls-tree', '-z', ref, '--', `:(literal)${path}`])
+    : await git(root, ['ls-files', '--stage', '-z', '--', `:(literal)${path}`]);
+  if (!ref && entry && (entry.split('\0').filter(Boolean).length !== 1 || !/^[0-9]+ [a-f0-9]+ 0\t/.test(entry)))
+    throw new Fault('UNMERGED_PATH', `Resolve index conflicts before review: ${path}`);
+  if (!entry) return null;
+  if (!entry.startsWith('100644 ') && !entry.startsWith('100755 ')) return undefined;
+  const blob = ref ? entry.split(' ')[2].split('\t')[0] : entry.split(' ')[1];
+  const size = Number((await git(root, ['cat-file', '-s', blob])).trim());
+  if (size > maxBytes) throw new Fault('CONTEXT_TOO_LARGE', `File exceeds limit: ${path}`, { files });
+  const raw = await git(root, ['cat-file', 'blob', blob]);
+  return raw.includes('\0') || raw.includes('\ufffd') ? undefined : raw;
+}
 function fenced(text: string) {
   const length = Math.max(3, ...(text.match(/`+/g) || []).map(run => run.length + 1));
   const fence = '`'.repeat(length);
@@ -111,25 +125,8 @@ export async function collectReview(input: ReviewInput) {
       safePath(path);
       const excluded = exclusion(path);
       if (excluded) { m.omitted.push({ path, reason: excluded }); continue; }
-      let text: string | null | undefined;
-      if (input.scope === 'working_tree') text = await disk(root, path);
-      else {
-        const entry = input.scope === 'staged'
-          ? await git(root, ['ls-files', '--stage', '-z', '--', `:(literal)${path}`])
-          : await git(root, ['ls-tree', '-z', head, '--', `:(literal)${path}`]);
-        if (input.scope === 'staged' && entry && (entry.split('\0').filter(Boolean).length !== 1 || !/^[0-9]+ [a-f0-9]+ 0\t/.test(entry)))
-          throw new Fault('UNMERGED_PATH', `Resolve index conflicts before review: ${path}`);
-        if (!entry) text = null;
-        else if (!entry.startsWith('100644 ') && !entry.startsWith('100755 ')) text = undefined;
-        else {
-          const obj = entry.split(' ')[1];
-          const blob = input.scope === 'branch' ? entry.split(' ')[2].split('\t')[0] : obj;
-          const size = Number((await git(root, ['cat-file', '-s', blob])).trim());
-          if (size > maxBytes) throw new Fault('CONTEXT_TOO_LARGE', `File exceeds limit: ${path}`, { files: paths });
-          const raw = await git(root, ['cat-file', 'blob', blob]);
-          text = raw.includes('\0') || raw.includes('\ufffd') ? undefined : raw;
-        }
-      }
+      const text = input.scope === 'working_tree' ? await disk(root, path)
+        : await gitFile(root, path, input.scope === 'branch' ? head : undefined, paths);
       if (text === undefined) { m.omitted.push({ path, reason: 'binary/non-UTF8/symlink/submodule' }); continue; }
       const diff = untracked.includes(path) ? 'UNTRACKED NEW FILE' : await git(root,
         ['diff', '--no-ext-diff', '--no-textconv', '--no-renames', '--unified=5', ...range, '--', `:(literal)${path}`]);

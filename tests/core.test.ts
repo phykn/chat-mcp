@@ -157,6 +157,17 @@ test('an input failure before clicking can be cancelled through the adapter owne
   assert.equal(adapter.stops, 1);
 });
 
+test('cancellation after recovery records elapsed time and clears the previous error', async () => {
+  const { runner, adapter, store } = await setup();
+  adapter.fail = true;
+  assert.equal((await runner.run({ request_id: 'elapsed' }, material)).status, 'unknown_commit');
+  const cancelled = await runner.cancel('elapsed');
+  assert.equal(cancelled.status, 'cancelled');
+  const saved = (await store.read('elapsed'))!;
+  assert.equal(typeof saved.elapsed_ms, 'number');
+  assert.equal(saved.error, undefined);
+});
+
 test('a definitive pre-send rejection does not leave the tab blocked by an uncertain request', async () => {
   const { runner, adapter } = await setup();
   const send = adapter.send.bind(adapter);
