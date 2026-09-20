@@ -98,7 +98,7 @@ export class Orchestrator {
     let last = '', stableSince = Date.now();
     let loadingError: Fault | undefined;
     while (Date.now() < deadline) {
-      const s = await this.adapter.snapshot();
+      const s = await this.adapter.snapshot(r.binding);
       // Navigation can mount an empty user message before its text and composer.
       // Observe without sending/cancelling until complete ownership evidence returns.
       let answer;
@@ -142,7 +142,7 @@ export class Orchestrator {
       const current = (await this.store.read(id))!;
       if (current.status === 'prepared') return await this.finish(current, 'cancelled');
       if (!isCancellable(current)) return current;
-      const s = await this.adapter.snapshot();
+      const s = await this.adapter.snapshot(current.binding);
       const answer = this.match(current, s);
       await this.adapter.cancel(current.binding!);
       return await this.finish(current, 'cancelled', answer?.text);

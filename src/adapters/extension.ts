@@ -18,7 +18,9 @@ export class ExtensionAdapter implements Adapter {
     if (!response.ok) throw new Fault('BRIDGE_ERROR', `Bridge HTTP ${response.status}`);
     return result.value;
   }
-  snapshot(): Promise<Snapshot> { return this.rpc({ command: 'snapshot' }); }
+  snapshot(binding?: Binding): Promise<Snapshot> {
+    return this.rpc({ command: 'snapshot', ...(binding ? { args: { binding } } : {}) });
+  }
   async prepare(url?: string) {
     let s = await this.snapshot();
     if (s.draft.trim()) throw new Fault('DRAFT_PRESENT', 'Existing draft will not be overwritten.');

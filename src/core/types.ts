@@ -8,6 +8,7 @@ export interface Snapshot {
   ordinary: boolean;
   draft: string;
   generating: boolean;
+  visible?: boolean;
   messages: { id: string; role: string; text: string; complete: boolean }[];
   error?: string;
 }
@@ -19,7 +20,7 @@ export interface Binding {
   userId?: string;
 }
 export interface Adapter {
-  snapshot(): Promise<Snapshot>;
+  snapshot(binding?: Binding): Promise<Snapshot>;
   prepare(handle?: string): Promise<Snapshot>;
   send(text: string, binding: Binding): Promise<void>;
   cancel(binding: Binding): Promise<void>;

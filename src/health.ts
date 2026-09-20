@@ -24,6 +24,7 @@ export async function health(store: Store, adapter: Adapter) {
       : code === 'CONTENT_UNAVAILABLE' ? 'Wait for the ChatGPT tab to finish loading and check again. If this persists, reload the extension in chrome://extensions.'
       : code === 'SETUP_REQUIRED' ? 'Run npm run setup from the project folder, then reconnect the Chrome extension.'
       : code === 'BRIDGE_CONFLICT' ? 'Another Chat MCP installation is using port 9234. Stop that bridge before retrying.'
+      : code === 'BRIDGE_VERSION' ? 'Stop the old Chat MCP bridge process and retry to start the updated bridge.'
       : 'Run npm run setup from the project folder and check the connection again.';
     return { browser: 'unavailable', ready: false, error: code, next_action: next,
       extension_folder: join(dataDir, 'extension'), requests };

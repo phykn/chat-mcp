@@ -7,6 +7,7 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
   const sent: number[] = [], injected: number[] = [], updated: any[] = [], sockets: Socket[] = [];
   const listeners: any = {}, pages = new Map(tabs.map(tab => [tab.id, tab])), reloads = { count: 0 };
   const loaded = new Set<number>();
+  let pageSnapshot: any;
   let waitForTab: (() => Promise<void>) | undefined;
   class Socket {
     static OPEN = 1; static CONNECTING = 0;
@@ -31,7 +32,7 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
       get: async (id: number) => { if (waitForTab) await waitForTab(); const tab = pages.get(id); if (!tab) throw Error('No tab'); return tab; },
       query: async () => [...pages.values()],
       create: async ({ url }: any) => { const tab = { id: 10 + pages.size, url }; pages.set(tab.id, tab); return tab; },
-      sendMessage: async (id: number) => { if (!loaded.has(id)) throw Error('No receiver'); sent.push(id); return { value: { url: pages.get(id)!.url, draft: '', generating: false } }; },
+      sendMessage: async (id: number) => { if (!loaded.has(id)) throw Error('No receiver'); sent.push(id); return { value: pageSnapshot || { url: pages.get(id)!.url, draft: '', generating: false } }; },
       update: async (id: number, change: any) => { updated.push({ id, ...change }); return pages.get(id); },
       onRemoved: event('removed'), onUpdated: event('updated'),
     },
@@ -40,8 +41,28 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
   runInNewContext(source, { chrome, WebSocket: Socket, setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {} });
   const call = (command: string, tabId?: number) => new Promise<any>(resolve => listeners.message({ command, tabId }, {}, resolve));
   await call('status');
-  return { call, listeners, pages, sent, injected, updated, sockets, local, reloads, blockGet: (wait?: () => Promise<void>) => { waitForTab = wait; } };
+  return { call, listeners, pages, sent, injected, updated, sockets, local, reloads, setSnapshot: (s: any) => { pageSnapshot = s; }, blockGet: (wait?: () => Promise<void>) => { waitForTab = wait; } };
 }
+
+test('only an owned response poll reveals a hidden ChatGPT tab', async () => {
+  const f = await fixture();
+  await f.call('connect', 1); f.sockets[0].open(); f.updated.length = 0;
+  const binding = { url: 'https://chatgpt.com/c/old', userId: 'u1', marker: '[owned]' };
+  const state = { url: binding.url, visible: false, ordinary: true, draft: '', generating: true,
+    messages: [{ id: 'u1', role: 'user', text: '[owned] question' }] };
+  f.setSnapshot(state);
+  await f.sockets[0].signal({ id: 'health', command: 'snapshot' });
+  assert.equal(f.updated.length, 0);
+  for (const changed of [{ url: 'https://chatgpt.com/c/other' }, { ordinary: false },
+    { visible: true }, { messages: [{ id: 'u2', role: 'user', text: 'manual' }] }]) {
+    f.setSnapshot({ ...state, ...changed });
+    await f.sockets[0].signal({ id: 'changed', command: 'snapshot', args: { binding } });
+    assert.equal(f.updated.length, 0);
+  }
+  f.setSnapshot(state);
+  await f.sockets[0].signal({ id: 'owned', command: 'snapshot', args: { binding } });
+  assert.deepEqual(f.updated, [{ id: 1, active: true }]);
+});
 
 test('first install opens and connects its own tab without changing existing chats', async () => {
   const f = await fixture();

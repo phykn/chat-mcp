@@ -5,6 +5,40 @@ import { readFile } from 'node:fs/promises';
 import { hash } from '../src/core/store.js';
 import { normalizeDraft } from '../src/core/text.js';
 
+test('a partially rendered response remains generating without a stop button, and cancellation never clicks Send', async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.addInitScript('window.__name = fn => fn');
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html>
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <div data-message-author-role="user" data-message-id="u1">[owned] question</div>
+      <div data-turn="assistant"><div data-message-author-role="assistant" data-message-id="a1">
+        <div class="streaming-animation">{&quot;ok&quot;:</div>
+      </div></div>
+      <button id="composer-submit-button" aria-label="Send prompt">Send</button>` }));
+    await page.goto('https://chatgpt.com/c/test');
+    await page.evaluate(() => {
+      (window as any).chrome = { runtime: { onMessage: { addListener: (fn: any) => (window as any).handler = fn } } };
+      (window as any).clicks = 0;
+      document.querySelector('button')!.onclick = () => (window as any).clicks++;
+    });
+    await page.addScriptTag({ content: await readFile('extension/content.js', 'utf8') });
+    const call = (msg: any) => page.evaluate(msg => new Promise<any>(resolve => (window as any).handler(msg, {}, resolve)), msg);
+    const s = (await call({ command: 'snapshot' })).value;
+    assert.equal(s.generating, true);
+    assert.equal(s.messages.at(-1).complete, false);
+    assert.equal((await call({ command: 'cancel', args: { binding: { url: s.url, userId: 'u1', marker: '[owned]' } } })).error.code, 'STOP_UNAVAILABLE');
+    assert.equal(await page.evaluate(() => (window as any).clicks), 0);
+    await page.evaluate(() => {
+      document.querySelector('.streaming-animation')!.className = '';
+      document.querySelector('[data-turn="assistant"]')!.insertAdjacentHTML('beforeend', '<button data-testid="copy-turn-action-button">Copy</button>');
+    });
+    assert.equal((await call({ command: 'snapshot' })).value.generating, false);
+    assert.equal((await call({ command: 'snapshot' })).value.messages.at(-1).complete, true);
+  } finally { await browser.close(); }
+});
+
 test('user changes during the draft ownership check prevent cancellation', async t => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {

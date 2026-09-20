@@ -1,4 +1,4 @@
-import { browserSnapshot } from '../src/adapters/dom.js';
+import { browserSnapshot, stopButton } from '../src/adapters/dom.js';
 import { normalizeDraft } from '../src/core/text.js';
 declare const chrome: any;
 let busy = false;
@@ -54,7 +54,9 @@ async function execute(msg: any) {
       }
       const user = s.messages.filter(m => m.role === 'user').at(-1);
       if (user?.id !== b.userId || !user?.text.includes(b.marker)) throw fault('NOT_OWNER', 'Request no longer owns generation.');
-      if (s.generating) document.querySelector<HTMLButtonElement>('#composer-submit-button')!.click();
+      const stop = stopButton();
+      if (s.generating && !stop) throw fault('STOP_UNAVAILABLE', 'Response is still rendering but its stop control is unavailable. Retry cancellation after the tab finishes rendering.');
+      stop?.click();
       return { cancelled: true };
     }
     if (msg.command !== 'send') throw fault('UNKNOWN_COMMAND', 'Unsupported command.');

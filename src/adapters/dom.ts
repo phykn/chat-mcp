@@ -21,6 +21,11 @@ export function composerText(editor: HTMLElement): string {
   return read(editor);
 }
 
+export function stopButton() {
+  const button = document.querySelector<HTMLButtonElement>('#composer-submit-button');
+  return button && /답변 중지|응답 중지|Stop response/.test(button.getAttribute('aria-label') || '') ? button : undefined;
+}
+
 // Runs only in the connected ChatGPT page. Selectors observed on 2026-09-20.
 export function browserSnapshot(): Snapshot {
   const editor = document.querySelector<HTMLElement>('#prompt-textarea');
@@ -40,12 +45,14 @@ export function browserSnapshot(): Snapshot {
     text: messageText(e),
     complete: !!e.closest('[data-turn="assistant"]')?.querySelector('[data-testid="copy-turn-action-button"]'),
   }));
-  const label = document.querySelector('#composer-submit-button')?.getAttribute('aria-label') || '';
+  const lastAssistant = [...document.querySelectorAll('[data-message-author-role="assistant"]')].at(-1);
+  const streaming = !!lastAssistant?.querySelector('.streaming-animation');
   const selectedChat = chat?.getAttribute('aria-checked') === 'true';
   const selectedWork = work?.getAttribute('aria-checked') === 'true';
   const chatThread = /^\/c\/[^/]+$/.test(location.pathname) && messages.some(m => m.role === 'user');
   return { url: location.href, draft: editor ? composerText(editor) : '',
     ordinary: location.origin === 'https://chatgpt.com' && !!editor && !selectedWork && (selectedChat || chatThread),
-    generating: /답변 중지|Stop response/.test(label), messages,
+    visible: document.visibilityState === 'visible',
+    generating: !!stopButton() || (streaming && !messages.filter(m => m.role === 'assistant').at(-1)?.complete), messages,
     error: [...document.querySelectorAll('[role="alert"]')].map(e => e.textContent || '').filter(Boolean).join('\n') || undefined };
 }

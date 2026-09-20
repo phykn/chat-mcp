@@ -21,6 +21,7 @@ Setup registers the local Codex plugin with its MCP tools and usage skill, and p
 3. ChatGPT opens and connects automatically. Sign in and select **Chat** if shown.
 
 Keep the connected tab open. It reconnects after Chrome restarts.
+While waiting for a response, Chat MCP selects this tab so ChatGPT can finish rendering.
 
 ## 3. Use it
 

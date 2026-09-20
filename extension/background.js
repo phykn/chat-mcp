@@ -41,6 +41,16 @@ function connect() {
       if (!isChat(tab)) throw Error('Connected tab left ChatGPT.');
       const before = await snapshot(target);
       if (!current()) return;
+      // Hidden ChatGPT tabs can stop rendering partway through a streamed answer.
+      // Only the active request may reveal its own tab; health checks stay passive.
+      const b = msg.command === 'snapshot' && msg.args?.binding;
+      const s = before.value;
+      const user = s?.messages?.filter(m => m.role === 'user').at(-1);
+      if (b?.userId && s?.visible === false && s.ordinary && s.url === b.url &&
+          user?.id === b.userId && user.text.includes(b.marker)) {
+        await chrome.tabs.update(target, { active: true });
+        if (!current()) return;
+      }
       let value;
       if (msg.command === 'new') {
         if (before.error || before.value.url !== msg.args.expectedUrl || before.value.draft.trim() || before.value.generating)
