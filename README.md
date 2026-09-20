@@ -15,7 +15,7 @@ npm run setup
 ```
 
 Already downloaded? Run `npm run setup` inside the project folder.
-Setup installs **Chat MCP**, its usage skill, and the Chrome extension files.
+Setup installs and registers **Chat MCP** as a local Codex plugin, including its MCP tools and usage skill, and prepares the Chrome extension files. After connecting Chrome, start a new Codex task to use it.
 
 ## 2. Connect Chrome
 
