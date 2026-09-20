@@ -1,6 +1,6 @@
 # chat-mcp
 
-A Codex plugin that delegates code reviews and analysis to your ChatGPT account in Chrome.
+Chat MCP is a Codex plugin for personal productivity and coding assistance. It automates transferring selected context to ChatGPT and retrieving responses through a connected Chrome tab. It is designed for individual development workflows, not bulk data collection or multi-user service hosting.
 
 ## 1. Install
 
@@ -36,9 +36,9 @@ Codex can also use it automatically for larger reviews, design decisions, and de
 
 ## Usage notice
 
-This is an experimental project for research and testing. It uses browser automation and is not affiliated with, endorsed by, or supported by OpenAI.
+This project uses browser automation and is not affiliated with, endorsed by, or supported by OpenAI.
 
-Use it at your own risk. Browser automation may conflict with third-party terms and policies and may result in account restrictions or suspension. You are responsible for reviewing and complying with the applicable [OpenAI terms and policies](https://openai.com/policies/) and those of any other services you use. A research or testing purpose does not exempt you from those requirements.
+Use it at your own risk. Browser automation may conflict with third-party terms and policies and may result in account restrictions or suspension. You are responsible for reviewing and complying with the applicable [OpenAI terms and policies](https://openai.com/policies/) and those of any other services you use. Personal use does not exempt you from those requirements.
 
 Selected source code, diffs, and prompts are sent to ChatGPT through your connected account. Review what you share and do not submit credentials, confidential information, or code you are not authorized to disclose.
 
