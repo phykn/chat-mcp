@@ -2,16 +2,6 @@
 
 A Codex plugin that delegates code reviews and analysis to your ChatGPT account in Chrome.
 
-## Usage notice
-
-This is an experimental project for research and testing. It uses browser automation and is not affiliated with, endorsed by, or supported by OpenAI.
-
-Use it at your own risk. Browser automation may conflict with third-party terms and policies and may result in account restrictions or suspension. You are responsible for reviewing and complying with the applicable [OpenAI terms and policies](https://openai.com/policies/) and those of any other services you use. A research or testing purpose does not exempt you from those requirements.
-
-Selected source code, diffs, and prompts are sent to ChatGPT through your connected account. Review what you share and do not submit credentials, confidential information, or code you are not authorized to disclose.
-
-The software is provided without warranty. To the maximum extent permitted by applicable law, the authors and contributors disclaim liability for account restrictions, suspensions, damages, or other consequences arising from its use. See [LICENSE](LICENSE) for the full warranty disclaimer and limitation of liability.
-
 ## 1. Install
 
 You need **Codex, Node.js 22+, Git, and Chrome 116+**, plus a ChatGPT account.
@@ -43,6 +33,16 @@ Start a new Codex task and say:
 > Use Chat MCP to review my changes.
 
 Codex can also use it automatically for larger reviews, design decisions, and debugging. Selected code is sent to ChatGPT.
+
+## Usage notice
+
+This is an experimental project for research and testing. It uses browser automation and is not affiliated with, endorsed by, or supported by OpenAI.
+
+Use it at your own risk. Browser automation may conflict with third-party terms and policies and may result in account restrictions or suspension. You are responsible for reviewing and complying with the applicable [OpenAI terms and policies](https://openai.com/policies/) and those of any other services you use. A research or testing purpose does not exempt you from those requirements.
+
+Selected source code, diffs, and prompts are sent to ChatGPT through your connected account. Review what you share and do not submit credentials, confidential information, or code you are not authorized to disclose.
+
+The software is provided without warranty. To the maximum extent permitted by applicable law, the authors and contributors disclaim liability for account restrictions, suspensions, damages, or other consequences arising from its use. See [LICENSE](LICENSE) for the full warranty disclaimer and limitation of liability.
 
 ## License
 
