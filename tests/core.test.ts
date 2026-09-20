@@ -81,6 +81,19 @@ test('restart in sending state never resends even when marker is absent', async 
   assert.equal((await runner.run({ request_id: 'x' }, material)).status, 'unknown_commit');
   assert.equal(adapter.sends, 0);
 });
+
+test('cancel after a crash in prepared state is terminal and never touches the browser', async () => {
+  const { runner, adapter, store } = await setup();
+  await store.init();
+  await store.write({ id: 'prepared', hash: hash({ request_id: 'prepared' }), status: 'prepared',
+    started: Date.now(), updated: Date.now(), handle: 'h',
+    binding: { url: adapter.state.url, baseline: [], marker: '[prepared]' } });
+  adapter.snapshot = async () => { throw Error('browser is offline'); };
+  assert.equal((await runner.cancel('prepared')).status, 'cancelled');
+  assert.equal((await runner.run({ request_id: 'prepared' }, async () => { throw Error('must not collect'); })).status, 'cancelled');
+  assert.equal(adapter.sends, 0);
+  assert.equal(adapter.stops, 0);
+});
 test('failed durable write prevents any send', async () => {
   const { runner, store, adapter } = await setup();
   store.write = async () => { throw Error('disk full'); };
@@ -106,14 +119,14 @@ test('another request cannot displace an unresolved generation', async () => {
   assert.equal(adapter.sends, 1);
 });
 test('cancel passes durable signal without waiting for operation lock', async () => {
-  const { runner, adapter, store } = await setup(); runner.timeout = 2_000;
+  const { runner, adapter, store } = await setup(); runner.timeout = 10_000;
   adapter.reply = function () { this.state.generating = true; };
+  let notify!: () => void;
+  const sent = new Promise<void>(resolve => notify = resolve);
+  const write = store.write.bind(store);
+  store.write = async record => { await write(record); if (record.status === 'sent') notify(); };
   const task = runner.run({ request_id: 'x' }, material);
-  const deadline = Date.now() + 2_000;
-  while (!(await store.read('x'))?.binding?.userId) {
-    if (Date.now() > deadline) { await task; assert.fail('request never reached sent'); }
-    await new Promise(r => setTimeout(r, 5));
-  }
+  await Promise.race([sent, task.then(() => assert.fail('request finished before cancellation'))]);
   const signal = await runner.cancel('x');
   assert.ok(['cancel_requested', 'cancelled'].includes(signal.status));
   assert.equal((await task).status, 'cancelled'); assert.equal(adapter.stops, 1);
@@ -152,6 +165,24 @@ test('a definitive pre-send rejection does not leave the tab blocked by an uncer
   adapter.send = send;
   assert.equal((await runner.run({ request_id: 'next' }, material)).status, 'completed');
   assert.equal(adapter.sends, 1);
+});
+
+test('a definitive send failure can clear its unchanged draft, preserving user edits', async () => {
+  const { runner, adapter } = await setup();
+  adapter.send = async text => { adapter.state.draft = text; throw new Fault('SEND_UNAVAILABLE', 'Send disabled'); };
+  adapter.cancel = async binding => {
+    if (hash(adapter.state.draft) !== binding.draftHash) throw new Fault('NOT_OWNER', 'User edited draft');
+    adapter.state.draft = ''; adapter.stops++;
+  };
+  assert.equal((await runner.run({ request_id: 'failed-draft' }, material)).status, 'failed');
+  const original = adapter.state.draft;
+  adapter.state.draft += 'user edit';
+  await assert.rejects(runner.cancel('failed-draft'), (e: any) => e.code === 'NOT_OWNER');
+  assert.equal(adapter.state.draft, original + 'user edit');
+  adapter.state.draft = original;
+  assert.equal((await runner.cancel('failed-draft')).status, 'cancelled');
+  assert.equal(adapter.state.draft, '');
+  assert.equal(adapter.stops, 1);
 });
 
 test('navigation after send can temporarily hide the composer while keeping message nodes', async () => {

@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/build.mjs",
+    "pretest": "npm run build",
     "test": "tsx --test --test-timeout=30000 tests/*.test.ts",
     "start": "node dist/main.js",
     "bridge": "node dist/bridge.js",

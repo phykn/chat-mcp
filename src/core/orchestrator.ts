@@ -5,6 +5,8 @@ import { Fault, type Adapter, type Record, type Material, type Snapshot } from '
 import { normalizeDraft } from './text.js';
 
 const pending = (r: Record) => ['sending', 'sent', 'unknown_commit', 'timed_out_after_send'].includes(r.status);
+const failedDraft = (r: Record) => r.status === 'failed' && !!r.binding?.draftHash &&
+  ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE'].includes(r.error?.code || '');
 export class Orchestrator {
   constructor(public store: Store, public adapter: Adapter,
     public timeout = 300_000, public poll = 750, public stable = 1_500) {}
@@ -134,7 +136,7 @@ export class Orchestrator {
   async cancel(id: string) {
     const r = await this.store.read(id);
     if (!r) throw new Fault('NOT_FOUND', 'Unknown request_id.');
-    if (!pending(r) && r.status !== 'prepared') return r;
+    if (!pending(r) && r.status !== 'prepared' && !failedDraft(r)) return r;
     await this.store.requestCancel(id);
     // The active worker polls this durable signal without queuing behind its own lock.
     let release;
@@ -142,7 +144,12 @@ export class Orchestrator {
     catch (e) { if (e instanceof Fault && e.code === 'BUSY') return { request_id: id, status: 'cancel_requested' }; throw e; }
     try {
       const current = (await this.store.read(id))!;
-      if (!pending(current)) return current;
+      if (current.status === 'prepared') {
+        current.status = 'cancelled'; current.error = undefined;
+        current.elapsed_ms = Date.now() - current.started;
+        await this.store.write(current); return current;
+      }
+      if (!pending(current) && !failedDraft(current)) return current;
       const s = await this.adapter.snapshot();
       const answer = this.match(current, s);
       await this.adapter.cancel(current.binding!);

@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rename, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { collectAsk, collectReview } from '../src/context/collect.js';
+import { collectAsk, collectReview, safePath } from '../src/context/collect.js';
 
 function git(root: string, ...args: string[]) { return execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }); }
 async function repo() {
@@ -63,4 +63,29 @@ test('ask context reports omissions and missing files explicitly', async () => {
   assert.match(m.prompt, /1: def add/); assert.equal(m.omitted[0].path, '.env');
   assert.equal(m.omitted[1].path, 'extension/config.js');
   await assert.rejects(collectAsk({ prompt: 'read', repo_path: root, context_paths: ['missing'] }), (e: any) => e.code === 'FILE_NOT_FOUND');
+});
+
+test('dot segments cannot bypass pairing credential exclusions', async () => {
+  const root = await repo();
+  await mkdir(join(root, 'extension'));
+  await writeFile(join(root, 'extension', 'config.js'), 'PAIRING_CREDENTIAL_FIXTURE');
+  const m = await collectAsk({ prompt: 'read', repo_path: root,
+    context_paths: ['././extension/config.js', 'extension/./config.js'] });
+  assert.deepEqual(m.files, []);
+  assert.equal(m.omitted.length, 2);
+  assert.doesNotMatch(m.prompt, /PAIRING_CREDENTIAL_FIXTURE/);
+});
+
+test('review path filters accept dot segments and the repository root', async () => {
+  const root = await repo();
+  await writeFile(join(root, 'demo.py'), 'changed\n');
+  for (const path of ['.', './', '././demo.py']) {
+    assert.deepEqual((await collectReview({ repo_path: root, scope: 'working_tree', paths: [path] })).files, ['demo.py']);
+  }
+});
+
+test('normalization cannot turn a relative path into a Windows drive path', () => {
+  for (const path of ['././C:/tmp/file', './C:relative', '.\\.\\D:\\file', '//server/share', '../escape']) {
+    assert.throws(() => safePath(path), (e: any) => e.code === 'INVALID_PATH');
+  }
 });

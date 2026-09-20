@@ -21,9 +21,10 @@ async function git(repo: string, args: string[]) {
 }
 export function safePath(path: string) {
   const p = path.replaceAll('\\', '/');
-  if (!p || isAbsolute(p) || /^[a-z]:/i.test(p) || p.split('/').some(s => s === '..' || !s) || p.includes('\0'))
+  const normalized = p.split('/').filter(s => s && s !== '.').join('/') || '.';
+  if (!p || isAbsolute(p) || /^[a-z]:/i.test(normalized) || p.split('/').some(s => s === '..') || p.includes('\0'))
     throw new Fault('INVALID_PATH', `Repository-relative file path required: ${path}`);
-  return p.replace(/^\.\//, '');
+  return normalized;
 }
 export function exclusion(path: string): string | undefined {
   if (/(^|\/)(node_modules|vendor|dist|build|coverage|\.git|\.venv|\.chat-mcp)(\/|$)/i.test(path)) return 'generated/dependency/internal';
@@ -98,7 +99,7 @@ export async function collectReview(input: ReviewInput) {
     base = (await git(root, ['merge-base', head, ref])).trim();
   }
   const specs = (input.paths || []).map(safePath);
-  const selected = (p: string) => !specs.length || specs.some(s => p === s || p.startsWith(s + '/'));
+  const selected = (p: string) => !specs.length || specs.some(s => s === '.' || p === s || p.startsWith(s + '/'));
   const range = input.scope === 'staged' ? ['--cached', head] : input.scope === 'branch' ? [base, head] : [head];
   return consistent(async () => {
     if ((await git(root, ['rev-parse', '--verify', 'HEAD'])).trim() !== head) throw new Fault('CONTEXT_CHANGED', 'HEAD changed during collection.');
