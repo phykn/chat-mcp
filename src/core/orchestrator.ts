@@ -3,7 +3,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { Store, hash } from './store.js';
 import { Fault, type Adapter, type Record, type Material, type Snapshot } from './types.js';
 import { normalizeDraft } from './text.js';
-import { isTerminal, isPending, isCancellable } from './request.js';
+import { isTerminal, isPending, isCancellable, isSendRejected } from './request.js';
 
 export class Orchestrator {
   constructor(public store: Store, public adapter: Adapter,
@@ -49,7 +49,7 @@ export class Orchestrator {
       catch (e) {
         // These replies prove that the content script did not click Send.
         // Transport failures still enter recovery and must never be resent.
-        if (e instanceof Fault && ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE', 'DRAFT_PRESENT', 'CONVERSATION_CHANGED'].includes(e.code)) {
+        if (e instanceof Fault && isSendRejected(e.code)) {
           r.status = 'failed'; r.error = { code: e.code, message: e.message };
           await this.store.write(r); return r;
         }
@@ -96,9 +96,11 @@ export class Orchestrator {
     const loadingDeadline = Date.now() + Math.min(this.timeout, 15_000);
     const deadline = Date.now() + this.timeout;
     let last = '', stableSince = Date.now();
+    let hidden = false;
     let loadingError: Fault | undefined;
     while (Date.now() < deadline) {
       const s = await this.adapter.snapshot(r.binding);
+      hidden = s.visible === false;
       // Navigation can mount an empty user message before its text and composer.
       // Observe without sending/cancelling until complete ownership evidence returns.
       let answer;
@@ -125,7 +127,9 @@ export class Orchestrator {
     }
     if (loadingError) throw loadingError;
     r.status = r.binding?.userId ? 'timed_out_after_send' : 'unknown_commit';
-    r.error = { code: 'TIMEOUT', message: 'Retry the identical request_id and input to retrieve the existing answer; it will not resend.' };
+    r.error = { code: hidden ? 'PAGE_HIDDEN' : 'TIMEOUT', message: (hidden
+      ? 'ChatGPT is hidden and rendering may be paused. Wake/unlock the screen and show the ChatGPT window. ' : '') +
+      'Retry the identical request_id and input to retrieve the existing answer; it will not resend.' };
     r.elapsed_ms = Date.now() - r.started; await this.store.write(r); return r;
   }
 

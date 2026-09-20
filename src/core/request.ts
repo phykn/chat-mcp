@@ -1,5 +1,11 @@
 import type { Record } from './types.js';
 
+const draftErrors = ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE', 'CONVERSATION_CHANGED'];
+
+export function isSendRejected(code: string) {
+  return code === 'DRAFT_PRESENT' || draftErrors.includes(code);
+}
+
 export function isTerminal(r: Record) {
   return ['completed', 'cancelled', 'failed'].includes(r.status);
 }
@@ -14,5 +20,5 @@ export function isUnresolved(r: Record) {
 
 export function isCancellable(r: Record) {
   return isUnresolved(r) || (r.status === 'failed' && !!r.binding?.draftHash &&
-    ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE'].includes(r.error?.code || ''));
+    draftErrors.includes(r.error?.code || ''));
 }

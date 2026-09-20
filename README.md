@@ -22,6 +22,7 @@ Setup registers the local Codex plugin with its MCP tools and usage skill, and p
 
 Keep the connected tab open. It reconnects after Chrome restarts.
 While waiting for a response, Chat MCP selects this tab so ChatGPT can finish rendering.
+Keep Chrome visible and the PC awake while requests run. After a screen lock or sleep, restore the screen and retry the same request to retrieve its answer.
 
 ## 3. Use it
 

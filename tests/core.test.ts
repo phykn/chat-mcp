@@ -73,6 +73,23 @@ test('timeout resumes; incomplete answer is not returned as completed', async ()
   assert.equal((await runner.run({ request_id: 'x' }, material)).status, 'completed');
   assert.equal(adapter.sends, 1);
 });
+
+test('a hidden-page timeout explains recovery and resumes without another send', async () => {
+  const { runner, adapter } = await setup();
+  adapter.state.visible = false;
+  adapter.reply = function () { this.state.messages.push({ id: 'a', role: 'assistant', text: 'partial', complete: false }); };
+  const input = { request_id: 'hidden', prompt: 'hello' };
+  const pending = await runner.run(input, material);
+  assert.equal(pending.status, 'timed_out_after_send');
+  assert.equal(pending.error?.code, 'PAGE_HIDDEN');
+  assert.match(pending.error!.message, /Wake\/unlock/);
+  adapter.state.visible = true;
+  adapter.state.messages.at(-1)!.complete = true;
+  const completed = await runner.run(input, async () => { throw Error('must not recollect or resend'); });
+  assert.equal(completed.status, 'completed');
+  assert.equal(completed.error, undefined);
+  assert.equal(adapter.sends, 1);
+});
 test('restart in sending state never resends even when marker is absent', async () => {
   const { runner, adapter, store } = await setup();
   await store.init();
@@ -178,9 +195,10 @@ test('a definitive pre-send rejection does not leave the tab blocked by an uncer
   assert.equal(adapter.sends, 1);
 });
 
-test('a definitive send failure can clear its unchanged draft, preserving user edits', async () => {
+for (const code of ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE', 'CONVERSATION_CHANGED'])
+test(`a ${code} failure can clear its unchanged draft, preserving user edits`, async () => {
   const { runner, adapter } = await setup();
-  adapter.send = async text => { adapter.state.draft = text; throw new Fault('SEND_UNAVAILABLE', 'Send disabled'); };
+  adapter.send = async text => { adapter.state.draft = text; throw new Fault(code, 'Send was not clicked'); };
   adapter.cancel = async binding => {
     if (hash(adapter.state.draft) !== binding.draftHash) throw new Fault('NOT_OWNER', 'User edited draft');
     adapter.state.draft = ''; adapter.stops++;
