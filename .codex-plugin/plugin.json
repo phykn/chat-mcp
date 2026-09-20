@@ -1,0 +1,23 @@
+{
+  "name": "chat-mcp",
+  "version": "0.1.0+codex.20260920133607",
+  "description": "Ask ChatGPT and review code through your existing Chrome session.",
+  "author": {
+    "name": "phykn"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Chat MCP",
+    "shortDescription": "Delegate reviews and analysis to ChatGPT.",
+    "longDescription": "Use ChatGPT proactively for code reviews, design comparisons, and debugging analysis. Includes tools and a usage skill. Chrome connects automatically after one-time extension setup.",
+    "developerName": "phykn",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": [
+      "Review my changes with ChatGPT.",
+      "Ask ChatGPT to compare these approaches.",
+      "Check my Chat MCP connection."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,31 @@
+{
+  "name": "chat-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/build.mjs",
+    "test": "tsx --test --test-timeout=30000 tests/*.test.ts",
+    "start": "node dist/main.js",
+    "bridge": "node dist/bridge.js",
+    "setup": "node scripts/setup.mjs",
+    "recover-lock": "tsx scripts/recover-lock.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "ws": "8.21.3",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.0",
+    "esbuild": "^0.28.1",
+    "playwright": "^1.58.0",
+    "smol-toml": "^1.8.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  }
+}

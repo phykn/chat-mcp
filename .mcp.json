@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "chat-mcp": {
+      "command": "node",
+      "args": ["dist/plugin/main.js"],
+      "cwd": ".",
+      "startup_timeout_sec": 15,
+      "tool_timeout_sec": 360
+    }
+  }
+}

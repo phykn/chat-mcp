@@ -1,0 +1,6 @@
+interface:
+  display_name: "Chat MCP"
+  short_description: "Review code and analyze problems with ChatGPT"
+  default_prompt: "Use $chat-mcp to review my changes and verify the findings."
+policy:
+  allow_implicit_invocation: true
