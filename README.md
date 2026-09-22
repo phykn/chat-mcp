@@ -14,6 +14,20 @@ npm run setup
 
 Setup registers the local Codex plugin with its MCP tools and usage skill, and prepares the Chrome extension.
 
+### Add the GitHub marketplace
+
+In Codex's **Add plugin marketplace** dialog, use:
+
+| Field | Value |
+| --- | --- |
+| Source | `https://github.com/phykn/chat-mcp` |
+| Git ref | `main` |
+| Sparse paths | Leave empty |
+
+The catalog is `.agents/plugins/marketplace.json`, and the plugin lives at the repository root. There is no `plugins/codex` directory. Sparse paths filter the checkout; they do not change the marketplace root. See the [Codex marketplace documentation](https://developers.openai.com/plugins/build/plugins#marketplace-metadata).
+
+Adding the marketplace makes the plugin discoverable; it does not build the MCP server or prepare the Chrome extension. Git checkouts do not include `dist/plugin/main.js`. Use `npm run setup` above for a working local installation. Repository changes must reach the selected Git ref before the GitHub marketplace can use them.
+
 ## 2. Connect Chrome
 
 1. Open `chrome://extensions` and turn on **Developer mode**.

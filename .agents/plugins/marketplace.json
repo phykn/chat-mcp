@@ -1,0 +1,20 @@
+{
+  "name": "chat-mcp",
+  "interface": {
+    "displayName": "Chat MCP"
+  },
+  "plugins": [
+    {
+      "name": "chat-mcp",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
