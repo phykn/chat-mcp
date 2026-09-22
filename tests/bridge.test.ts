@@ -65,6 +65,42 @@ test('cold-start readiness waits for the extension without dispatching or retryi
   } finally { ws?.close(); process.kill(pid); }
 });
 
+test('a slow Send can finish after 15 seconds while a shorter request deadline still wins', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chat-mcp-slow-send-')), port = await freePort();
+  const token = 'd'.repeat(64);
+  await writeFile(join(dir, 'bridge-token'), token);
+  const { url } = await ensureBridge(dir, port);
+  const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const health = await (await fetch(url + '/health', { headers: auth })).json() as any;
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/extension`, { origin: 'chrome-extension://' + 'd'.repeat(32) });
+  let delayed: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await once(ws, 'open'); ws.send(JSON.stringify({ token })); await once(ws, 'message');
+    const binding = { url: 'https://chatgpt.com/', baseline: [], marker: '[slow-send]' };
+    const send = (deadline: number) => fetch(url + '/rpc', { method: 'POST', headers: auth,
+      body: JSON.stringify({ command: 'send', args: { text: 'large editor input', binding }, deadline }) });
+    let commands = 0;
+    ws.on('message', bytes => {
+      const msg = JSON.parse(bytes.toString());
+      commands++;
+      delayed = setTimeout(() => ws.send(JSON.stringify({ id: msg.id, value: { clicked: true } })), 16_000);
+    });
+    const completed = await (await send(Date.now() + 120_000)).json() as any;
+    assert.deepEqual(completed.value, { clicked: true }, 'a slow editor must retain its send window');
+    assert.equal(commands, 1, 'a slow Send must not be resent');
+    ws.removeAllListeners('message');
+    const deadline = Date.now() + 200;
+    ws.on('message', bytes => {
+      assert.equal(JSON.parse(bytes.toString()).expiresAt, deadline);
+      commands++;
+    });
+    const expired = await (await send(deadline)).json() as any;
+    assert.equal(expired.error.code, 'BRIDGE_TIMEOUT');
+    assert.equal(commands, 2);
+    assert.ok(Date.now() < deadline + 5_000, 'the whole-request deadline must bound a slow Send');
+  } finally { clearTimeout(delayed); ws.close(); process.kill(health.pid); }
+});
+
 test('bridge rejects web origins and invalid credentials, routes only authenticated extension', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'chat-mcp-bridge-'));
   const token = 'test-token-'.repeat(7);
@@ -94,16 +130,40 @@ test('bridge rejects web origins and invalid credentials, routes only authentica
     const [heartbeat] = await once(ws, 'message');
     assert.equal(JSON.parse(heartbeat.toString()).revision, 'updated');
     let received = 0;
-    ws.on('message', bytes => { const msg = JSON.parse(bytes.toString()); if (msg.id) { received++; ws!.send(JSON.stringify({ id: msg.id, value: { ordinary: true } })); } });
+    ws.on('message', bytes => {
+      const msg = JSON.parse(bytes.toString());
+      if (msg.id) {
+        const remaining = msg.expiresAt - Date.now();
+        // Windows clocks in separate processes can differ by a millisecond.
+        assert.ok(remaining > 0 && remaining <= 15_050, `Invalid remaining command lifetime: ${remaining}ms`);
+        received++; ws!.send(JSON.stringify({ id: msg.id, value: { ordinary: true } }));
+      }
+    });
     for (const command of ['unsupported', 'send', 'cancel', 'new']) {
       assert.equal((await call(auth, command)).status, 400);
     }
     assert.equal(received, 0, 'invalid commands must not reach the browser');
+    const expired = await (await call(auth, 'snapshot', { deadline: Date.now() - 1 })).json() as any;
+    assert.equal(expired.error.code, 'COMMAND_EXPIRED');
+    assert.equal(received, 0, 'expired commands must not reach the browser');
     const reply = await (await call({ Authorization: `Bearer ${token}` })).json() as any;
     assert.deepEqual(reply.value, { ordinary: true }); assert.equal(typeof reply.id, 'string');
-    const overridden = await (await call(auth, 'snapshot', { id: 'caller-supplied-id' })).json() as any;
+    const overridden = await (await call(auth, 'snapshot', { id: 'caller-supplied-id', expiresAt: 0 })).json() as any;
     assert.deepEqual(overridden.value, { ordinary: true });
     assert.notEqual(overridden.id, 'caller-supplied-id', 'bridge owns request correlation IDs');
+
+    ws.removeAllListeners('message');
+    let boundedCommands = 0;
+    const limit = Date.now() + 250;
+    ws.on('message', bytes => {
+      const msg = JSON.parse(bytes.toString());
+      assert.equal(msg.expiresAt, limit);
+      boundedCommands++;
+    });
+    const bounded = await (await call(auth, 'snapshot', { deadline: limit })).json() as any;
+    assert.equal(bounded.error.code, 'BRIDGE_TIMEOUT');
+    assert.equal(boundedCommands, 1);
+    assert.ok(Date.now() < limit + 5_000, 'the request deadline must shorten the 15-second command timeout');
 
     ws.removeAllListeners('message');
     const commands: string[] = [];

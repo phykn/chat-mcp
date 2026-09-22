@@ -20,9 +20,9 @@ export interface Binding {
   userId?: string;
 }
 export interface Adapter {
-  snapshot(binding?: Binding): Promise<Snapshot>;
-  prepare(handle?: string): Promise<Snapshot>;
-  send(text: string, binding: Binding): Promise<void>;
+  snapshot(binding?: Binding, deadline?: number): Promise<Snapshot>;
+  prepare(handle?: string, deadline?: number): Promise<Snapshot>;
+  send(text: string, binding: Binding, deadline?: number): Promise<void>;
   cancel(binding: Binding): Promise<void>;
 }
 export interface Material {

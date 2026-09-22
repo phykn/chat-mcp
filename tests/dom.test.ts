@@ -5,6 +5,38 @@ import { readFile } from 'node:fs/promises';
 import { hash } from '../src/core/store.js';
 import { normalizeDraft } from '../src/core/text.js';
 
+test('a send expiring while its button renders leaves an owned draft without clicking Send', async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.addInitScript('window.__name = fn => fn');
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html>
+      <button role="radio" aria-checked="true">Chat</button>
+      <div id="prompt-textarea" contenteditable="true"></div>
+      <button id="composer-submit-button" aria-label="Send prompt" disabled>Send</button>` }));
+    await page.goto('https://chatgpt.com/');
+    await page.evaluate(() => {
+      Date.now = () => 0;
+      (window as any).chrome = { runtime: { onMessage: { addListener: (fn: any) => (window as any).handler = fn } } };
+      (window as any).clicks = 0;
+      document.querySelector('#composer-submit-button')!.addEventListener('click', () => (window as any).clicks++);
+    });
+    await page.addScriptTag({ content: await readFile('extension/content.js', 'utf8') });
+    const pending = page.evaluate(() => new Promise<any>(resolve => (window as any).handler({
+      command: 'send', expiresAt: 1,
+      args: { text: '[owned] test', binding: { url: location.href, baseline: [], marker: '[owned]' } },
+    }, {}, resolve)));
+    await page.waitForFunction(() => document.querySelector('#prompt-textarea')!.textContent === '[owned] test');
+    await page.evaluate(() => {
+      Date.now = () => 2;
+      (document.querySelector('#composer-submit-button') as HTMLButtonElement).disabled = false;
+    });
+    assert.equal((await pending).error?.code, 'COMMAND_EXPIRED');
+    assert.equal(await page.evaluate(() => (window as any).clicks), 0);
+    assert.equal(await page.locator('#prompt-textarea').innerText(), '[owned] test');
+  } finally { await browser.close(); }
+});
+
 test('a partially rendered response remains generating without a stop button, and cancellation never clicks Send', async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {

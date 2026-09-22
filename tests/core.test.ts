@@ -31,7 +31,7 @@ class Fake implements Adapter {
 async function setup() {
   const store = new Store(await mkdtemp(join(tmpdir(), 'chat-mcp-core-')));
   const adapter = new Fake();
-  const runner = new Orchestrator(store, adapter, 500, 5, 10);
+  const runner = new Orchestrator(store, adapter, 2_000, 5, 10);
   return { store, adapter, runner };
 }
 test('completed request replay avoids recollection and duplicate sends', async () => {
@@ -63,6 +63,122 @@ test('disconnect after send recovers matching answer without resend', async () =
   assert.equal((await runner.run({ request_id: 'x' }, material)).status, 'unknown_commit');
   adapter.reply();
   assert.equal((await runner.run({ request_id: 'x' }, material)).status, 'completed');
+  assert.equal(adapter.sends, 1);
+});
+
+for (const code of ['BRIDGE_TIMEOUT', 'BRIDGE_UNAVAILABLE', 'EXTENSION_DISCONNECTED', 'CONTENT_UNAVAILABLE']) {
+  test(`a ${code} send failure recovers the existing answer in the same call`, async () => {
+    const { runner, adapter } = await setup();
+    const send = adapter.send.bind(adapter);
+    adapter.send = async text => { await send(text); throw new Fault(code, 'Lost acknowledgement'); };
+    const r = await runner.run({ request_id: 'recover-send' }, material);
+    assert.equal(r.status, 'completed');
+    assert.equal(r.answer, '답변');
+    assert.equal(r.error, undefined);
+    assert.equal(adapter.sends, 1);
+  });
+
+  test(`a ${code} response poll recovers without another send`, async () => {
+    const { runner, adapter } = await setup();
+    const snapshot = adapter.snapshot.bind(adapter);
+    let failures = 0;
+    adapter.snapshot = async () => {
+      if (adapter.sends && failures++ < 2) throw new Fault(code, 'Temporary connection loss');
+      return snapshot();
+    };
+    const r = await runner.run({ request_id: 'recover-poll' }, material);
+    assert.equal(r.status, 'completed');
+    assert.equal(r.error, undefined);
+    assert.equal(adapter.sends, 1);
+  });
+}
+
+test('an unrecovered connection failure remains bounded and explains same-ID recovery', async t => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const { runner, adapter } = await setup();
+  runner.timeout = 70;
+  const snapshot = adapter.snapshot.bind(adapter);
+  adapter.snapshot = async () => {
+    if (adapter.sends) { t.mock.timers.tick(20); throw new Fault('CONTENT_UNAVAILABLE', 'Page still loading'); }
+    return snapshot();
+  };
+  const started = Date.now();
+  const r = await runner.run({ request_id: 'offline' }, material);
+  assert.equal(r.status, 'unknown_commit');
+  assert.equal(r.error?.code, 'CONTENT_UNAVAILABLE');
+  assert.match(r.error!.message, /same request_id|identical request_id/);
+  assert.ok(Date.now() - started >= 70);
+  assert.ok(r.elapsed_ms! >= 0);
+  assert.equal(adapter.sends, 1);
+});
+
+test('a lost acknowledgement with no visible marker never triggers a replacement send', async t => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const { runner, adapter } = await setup();
+  runner.timeout = 70;
+  const snapshot = adapter.snapshot.bind(adapter);
+  adapter.snapshot = async () => { if (adapter.sends) t.mock.timers.tick(20); return snapshot(); };
+  adapter.send = async () => { adapter.sends++; throw new Fault('BRIDGE_TIMEOUT', 'Unknown outcome'); };
+  const r = await runner.run({ request_id: 'uncertain' }, material);
+  assert.equal(r.status, 'unknown_commit');
+  assert.equal(adapter.sends, 1);
+  await assert.rejects(runner.run({ request_id: 'replacement' }, material), (e: any) => e.code === 'BUSY');
+});
+
+test('time spent sending counts toward the response deadline', async t => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const { runner, adapter } = await setup();
+  runner.timeout = 100;
+  adapter.reply = function () { this.state.generating = true; };
+  const send = adapter.send.bind(adapter), snapshot = adapter.snapshot.bind(adapter);
+  let polls = 0;
+  adapter.send = async text => { await send(text); t.mock.timers.tick(90); };
+  adapter.snapshot = async () => { if (adapter.sends) { polls++; t.mock.timers.tick(10); } return snapshot(); };
+  assert.equal((await runner.run({ request_id: 'budget' }, material)).status, 'timed_out_after_send');
+  assert.equal(polls, 1);
+  assert.equal(adapter.sends, 1);
+});
+
+test('preparation and browser commands share the request deadline and elapsed time', async t => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const { runner, adapter } = await setup();
+  const started = Date.now(), deadline = started + runner.timeout;
+  const prepare = adapter.prepare.bind(adapter), send = adapter.send.bind(adapter);
+  adapter.prepare = async (url?: string, end?: number) => {
+    assert.equal(end, deadline); t.mock.timers.tick(80); return prepare(url);
+  };
+  adapter.send = async (text: string, _binding?: Binding, end?: number) => {
+    assert.equal(end, deadline); await send(text);
+  };
+  const snapshot = adapter.snapshot.bind(adapter);
+  adapter.snapshot = async (_binding?: Binding, end?: number) => {
+    if (adapter.sends) { assert.equal(end, deadline); t.mock.timers.tick(20); }
+    return snapshot();
+  };
+  const r = await runner.run({ request_id: 'elapsed-budget' }, material);
+  assert.equal(r.status, 'completed');
+  assert.equal(r.started, started);
+  assert.ok(r.elapsed_ms! >= 100);
+});
+
+test('a tab reload late in a response gets a fresh bounded loading grace period', async t => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const { runner, adapter } = await setup();
+  runner.timeout = 30_000;
+  const snapshot = adapter.snapshot.bind(adapter);
+  let polls = 0;
+  adapter.snapshot = async () => {
+    const s = await snapshot();
+    if (adapter.sends) {
+      t.mock.timers.tick(20);
+      if (++polls === 2) {
+        t.mock.timers.tick(16_000);
+        return { ...s, ordinary: false, messages: [] };
+      }
+    }
+    return s;
+  };
+  assert.equal((await runner.run({ request_id: 'reload' }, material)).status, 'completed');
   assert.equal(adapter.sends, 1);
 });
 test('timeout resumes; incomplete answer is not returned as completed', async () => {
@@ -195,7 +311,7 @@ test('a definitive pre-send rejection does not leave the tab blocked by an uncer
   assert.equal(adapter.sends, 1);
 });
 
-for (const code of ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE', 'CONVERSATION_CHANGED'])
+for (const code of ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE', 'CONVERSATION_CHANGED', 'COMMAND_EXPIRED'])
 test(`a ${code} failure can clear its unchanged draft, preserving user edits`, async () => {
   const { runner, adapter } = await setup();
   adapter.send = async text => { adapter.state.draft = text; throw new Fault(code, 'Send was not clicked'); };
@@ -203,7 +319,9 @@ test(`a ${code} failure can clear its unchanged draft, preserving user edits`, a
     if (hash(adapter.state.draft) !== binding.draftHash) throw new Fault('NOT_OWNER', 'User edited draft');
     adapter.state.draft = ''; adapter.stops++;
   };
-  assert.equal((await runner.run({ request_id: 'failed-draft' }, material)).status, 'failed');
+  const failed = await runner.run({ request_id: 'failed-draft' }, material);
+  assert.equal(failed.status, 'failed');
+  if (code === 'COMMAND_EXPIRED') assert.match(failed.error!.message, /Cancel this request.*new request_id/);
   const original = adapter.state.draft;
   adapter.state.draft += 'user edit';
   await assert.rejects(runner.cancel('failed-draft'), (e: any) => e.code === 'NOT_OWNER');

@@ -1,6 +1,10 @@
 import type { Record } from './types.js';
 
-const draftErrors = ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE', 'CONVERSATION_CHANGED'];
+const draftErrors = ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE', 'CONVERSATION_CHANGED', 'COMMAND_EXPIRED'];
+
+export function isConnectionError(code: string) {
+  return ['BRIDGE_TIMEOUT', 'BRIDGE_UNAVAILABLE', 'EXTENSION_DISCONNECTED', 'CONTENT_UNAVAILABLE', 'COMMAND_EXPIRED'].includes(code);
+}
 
 export function isSendRejected(code: string) {
   return code === 'DRAFT_PRESENT' || draftErrors.includes(code);

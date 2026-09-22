@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { dataDir } from './config.js';
-import { bridgePort, bridgeProtocol, commandSchema, commandTimeout, failure, type Command, type Reply } from './bridge-protocol.js';
+import { bridgePort, bridgeProtocol, commandSchema, commandTimeoutFor, failure, type Command, type Reply } from './bridge-protocol.js';
 import type { AddressInfo } from 'node:net';
 
 const token = (await readFile(join(dataDir, 'bridge-token'), 'utf8')).trim();
@@ -42,6 +42,9 @@ const server = createServer(async (req, res) => {
 });
 
 function dispatch(command: Command): Promise<Reply> {
+  const expiresAt = Math.min(Date.now() + commandTimeoutFor(command), command.deadline ?? Infinity);
+  if (expiresAt <= Date.now())
+    return Promise.resolve(failure('COMMAND_EXPIRED', 'Request deadline expired before browser dispatch.'));
   const ws = extension;
   if (!ws || ws.readyState !== WebSocket.OPEN)
     return Promise.resolve(failure('EXTENSION_DISCONNECTED', 'Connect a ChatGPT tab with the Chat MCP extension.'));
@@ -53,9 +56,9 @@ function dispatch(command: Command): Promise<Reply> {
       pending.delete(id);
       resolve(reply);
     };
-    const timer = setTimeout(() => finish(failure('BRIDGE_TIMEOUT', 'Browser command outcome is unknown.')), commandTimeout);
+    const timer = setTimeout(() => finish(failure('BRIDGE_TIMEOUT', 'Browser command outcome is unknown.')), Math.max(0, expiresAt - Date.now()));
     pending.set(id, finish);
-    ws.send(JSON.stringify({ ...command, id }), error => {
+    ws.send(JSON.stringify({ ...command, id, expiresAt }), error => {
       if (error) finish(failure('EXTENSION_DISCONNECTED', 'Browser send failed; command outcome may be unknown.'));
     });
   });

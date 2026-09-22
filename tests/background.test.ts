@@ -7,14 +7,16 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
   const sent: number[] = [], injected: number[] = [], updated: any[] = [], sockets: Socket[] = [];
   const listeners: any = {}, pages = new Map(tabs.map(tab => [tab.id, tab])), reloads = { count: 0 };
   const loaded = new Set<number>();
+  const clock = { now: Date.now() };
   let pageSnapshot: any;
   let waitForTab: (() => Promise<void>) | undefined;
   class Socket {
     static OPEN = 1; static CONNECTING = 0;
     readyState = 0;
+    replies: any[] = [];
     onopen?: () => void; onclose?: () => void; onmessage?: (e: { data: string }) => Promise<void>;
     constructor() { sockets.push(this); }
-    send() {}
+    send(value: string) { this.replies.push(JSON.parse(value)); }
     close() { this.readyState = 3; this.onclose?.(); }
     open() { this.readyState = 1; this.onopen?.(); }
     message(command: string) { return this.onmessage!({ data: JSON.stringify({ id: 'request', command, args: { expectedUrl: 'https://chatgpt.com/c/old' } }) }); }
@@ -38,11 +40,25 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
     },
   };
   const source = (await readFile('extension/background.js', 'utf8')).replace("import { token, revision } from './config.js';", "const token = 'fixture', revision = 'fixture';");
-  runInNewContext(source, { chrome, WebSocket: Socket, setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {} });
+  runInNewContext(source, { chrome, WebSocket: Socket, Date: class extends Date { static now() { return clock.now; } },
+    setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {} });
   const call = (command: string, tabId?: number) => new Promise<any>(resolve => listeners.message({ command, tabId }, {}, resolve));
   await call('status');
-  return { call, listeners, pages, sent, injected, updated, sockets, local, reloads, setSnapshot: (s: any) => { pageSnapshot = s; }, blockGet: (wait?: () => Promise<void>) => { waitForTab = wait; } };
+  return { call, listeners, pages, sent, injected, updated, sockets, local, reloads, clock, setSnapshot: (s: any) => { pageSnapshot = s; }, blockGet: (wait?: () => Promise<void>) => { waitForTab = wait; } };
 }
+
+test('a command that expires while locating the tab never reaches its content script', async () => {
+  const f = await fixture();
+  await f.call('connect', 1); f.sockets[0].open(); f.sent.length = 0;
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.blockGet(() => gate);
+  const pending = f.sockets[0].signal({ id: 'expired', command: 'send', expiresAt: f.clock.now + 15_000 });
+  f.clock.now += 15_001;
+  release(); await pending;
+  assert.equal(f.sent.length, 0);
+  assert.equal(f.sockets[0].replies.at(-1).error.code, 'COMMAND_EXPIRED');
+});
 
 test('only an owned response poll reveals a hidden ChatGPT tab', async () => {
   const f = await fixture();

@@ -58,6 +58,14 @@ npm run doctor
 
 Checks plugin activation, extension files, MCP startup, and ChatGPT readiness without sending a chat request. Follow the reported next step.
 
+Requests automatically keep reading the existing response after a lost send acknowledgement or a temporary connection failure. New-chat preparation waits for the page to become ready, and response reading tolerates a page reload during generation. If recovery times out, retry with the **same request ID and identical inputs**; it will not send the prompt again. To stop recovery, use `chatgpt_cancel` with that ID. Do not create replacement requests while one remains unresolved.
+
+Large inputs get up to 60 seconds for the editor to accept and send them. Preparation, sending, and response reading still share the request's five-minute limit.
+
+`COMMAND_EXPIRED` means a delayed command was stopped before execution. Cancel its request to clear any unchanged draft it owns, then start a new request with a new ID. Keep Chrome visible and the PC awake. If a response remains stuck, preserve any draft, reload the connected tab, and retrieve the request with its original ID and inputs.
+
+For development, `npm test` runs the full suite. `npm run test:stability` repeats the request recovery, bridge restart, extension lifecycle, and offline Chrome DOM tests ten times. These simulated fault checks do not replace testing with a signed-in ChatGPT tab.
+
 | Issue | Fix |
 | --- | --- |
 | `npm` or `git` not found | Install Node.js or Git, then reopen your terminal. |

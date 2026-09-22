@@ -29,6 +29,11 @@ async function waitForInput(text: string) {
 }
 async function execute(msg: any) {
   if (msg.command === 'snapshot') return browserSnapshot();
+  const checkDeadline = () => {
+    if (msg.expiresAt !== undefined && Date.now() >= msg.expiresAt)
+      throw fault('COMMAND_EXPIRED', 'Browser command expired before execution; send was not clicked.');
+  };
+  checkDeadline();
   if (busy) throw fault('BUSY', 'Another input operation is running.');
   busy = true;
   try {
@@ -44,6 +49,7 @@ async function execute(msg: any) {
           throw fault('NOT_OWNER', 'No unchanged draft belonging to this request is visible.');
         // Hashing yields to the page: the user may type or switch chats meanwhile.
         const after = browserSnapshot();
+        checkDeadline();
         if (!after.ordinary || after.url !== s.url || after.generating || after.draft !== s.draft ||
             !sameBaseline(after.messages.map(m => m.id), b.baseline))
           throw fault('NOT_OWNER', 'The draft or conversation changed during cancellation.');
@@ -77,6 +83,7 @@ async function execute(msg: any) {
       throw fault('CONVERSATION_CHANGED', 'Target changed before send.');
     const button = sendButton();
     if (!button) throw fault('SEND_UNAVAILABLE', 'Send control not available.');
+    checkDeadline();
     button.click();
     return { clicked: true };
   } finally { busy = false; }

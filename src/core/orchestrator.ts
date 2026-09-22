@@ -3,14 +3,18 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { Store, hash } from './store.js';
 import { Fault, type Adapter, type Record, type Material, type Snapshot } from './types.js';
 import { normalizeDraft } from './text.js';
-import { isTerminal, isPending, isCancellable, isSendRejected } from './request.js';
+import { isTerminal, isPending, isCancellable, isSendRejected, isConnectionError } from './request.js';
+
+const recovery = 'Retry the identical request_id and input to retrieve the existing answer; it will not resend.';
 
 export class Orchestrator {
   constructor(public store: Store, public adapter: Adapter,
     public timeout = 300_000, public poll = 750, public stable = 1_500) {}
 
   async run(input: { request_id: string; conversation_handle?: string }, collect: () => Promise<Material>) {
+    const started = Date.now();
     const release = await this.store.lock();
+    const deadline = started + this.timeout;
     let r: Record | undefined;
     try {
       const digest = hash(input);
@@ -20,7 +24,7 @@ export class Orchestrator {
       if (r && isPending(r)) {
         r.status = r.status === 'sending' ? 'unknown_commit' : r.status;
         await this.store.write(r);
-        return await this.wait(r);
+        return await this.wait(r, deadline);
       }
       const records = await this.store.records();
       if (records.some(x => x.id !== input.request_id && isPending(x)))
@@ -33,9 +37,9 @@ export class Orchestrator {
         url = previous.binding.url;
       }
       const material = await collect();
-      const before = await this.adapter.prepare(url);
+      const before = await this.adapter.prepare(url, deadline);
       if (!before.ordinary) throw new Fault('NOT_ORDINARY_CHAT', 'Ordinary Chat could not be verified.');
-      r = { id: input.request_id, hash: digest, status: 'prepared', started: Date.now(), updated: Date.now(),
+      r = { id: input.request_id, hash: digest, status: 'prepared', started, updated: Date.now(),
         handle: input.conversation_handle || randomUUID(),
         binding: { url: before.url, baseline: before.messages.map(m => m.id), marker: `[chat-mcp:${randomUUID()}]` },
         material: { scope: material.scope, files: material.files, omitted: material.omitted } };
@@ -43,25 +47,31 @@ export class Orchestrator {
       r.binding!.draftHash = hash(normalizeDraft(text));
       await this.store.write(r);
       if (await this.store.cancelled(r.id)) return await this.finish(r, 'cancelled');
+      if (Date.now() >= deadline) throw new Fault('TIMEOUT', 'Request preparation exceeded its deadline; send was not clicked.');
       r.status = 'sending';
       await this.store.write(r);
-      try { await this.adapter.send(text, r.binding!); }
+      try { await this.adapter.send(text, r.binding!, deadline); }
       catch (e) {
         // These replies prove that the content script did not click Send.
         // Transport failures still enter recovery and must never be resent.
         if (e instanceof Fault && isSendRejected(e.code)) {
-          r.status = 'failed'; r.error = { code: e.code, message: e.message };
+          r.status = 'failed'; r.error = { code: e.code, message: e.message + (e.code === 'COMMAND_EXPIRED'
+            ? ' Cancel this request to clear its unchanged draft, then start a new request with a new request_id.' : '') };
           await this.store.write(r); return r;
         }
-        throw e;
+        if (!(e instanceof Fault) || !isConnectionError(e.code)) throw e;
+        r.status = 'unknown_commit';
+        r.error = { code: e.code, message: e.message };
+        await this.store.write(r);
       }
-      return await this.wait(r);
+      return await this.wait(r, deadline);
     } catch (e) {
       if (e instanceof Fault && e.code === 'REQUEST_ID_CONFLICT') throw e;
       if (!r || isTerminal(r)) throw e;
       const err = e instanceof Fault ? e : new Fault('UI_ERROR', String(e));
-      r.error = { code: err.code, message: err.message };
       r.status = r.status === 'prepared' ? 'failed' : r.binding?.userId ? 'timed_out_after_send' : 'unknown_commit';
+      r.error = { code: err.code, message: err.message + (isPending(r) ? ` ${recovery}` : '') };
+      r.elapsed_ms = Date.now() - r.started;
       await this.store.write(r);
       return r;
     } finally { await release(); }
@@ -92,22 +102,33 @@ export class Orchestrator {
     return replies.at(-1);
   }
 
-  async wait(r: Record) {
-    const loadingDeadline = Date.now() + Math.min(this.timeout, 15_000);
-    const deadline = Date.now() + this.timeout;
+  async wait(r: Record, deadline = Date.now() + this.timeout) {
     let last = '', stableSince = Date.now();
     let hidden = false;
     let loadingError: Fault | undefined;
+    let loadingDeadline: number | undefined;
+    let connectionError: Fault | undefined;
     while (Date.now() < deadline) {
-      const s = await this.adapter.snapshot(r.binding);
+      let s: Snapshot;
+      try { s = await this.adapter.snapshot(r.binding, deadline); connectionError = undefined; }
+      catch (e) {
+        if (!(e instanceof Fault) || !isConnectionError(e.code)) throw e;
+        connectionError = e;
+        last = ''; stableSince = Date.now();
+        await sleep(this.poll);
+        continue;
+      }
       hidden = s.visible === false;
       // Navigation can mount an empty user message before its text and composer.
       // Observe without sending/cancelling until complete ownership evidence returns.
       let answer;
-      try { answer = this.match(r, s); loadingError = undefined; }
+      try { answer = this.match(r, s); loadingError = undefined; loadingDeadline = undefined; }
       catch (e) {
-        if (e instanceof Fault && ['NOT_ORDINARY_CHAT', 'CONVERSATION_CHANGED'].includes(e.code) && Date.now() < loadingDeadline) {
-          loadingError = e; await sleep(this.poll); continue;
+        if (e instanceof Fault && ['NOT_ORDINARY_CHAT', 'CONVERSATION_CHANGED'].includes(e.code)) {
+          loadingDeadline ??= Math.min(deadline, Date.now() + 15_000);
+          if (Date.now() < loadingDeadline) {
+            loadingError = e; last = ''; stableSince = Date.now(); await sleep(this.poll); continue;
+          }
         }
         throw e;
       }
@@ -125,11 +146,12 @@ export class Orchestrator {
       }
       await sleep(this.poll);
     }
+    if (connectionError) throw connectionError;
     if (loadingError) throw loadingError;
     r.status = r.binding?.userId ? 'timed_out_after_send' : 'unknown_commit';
     r.error = { code: hidden ? 'PAGE_HIDDEN' : 'TIMEOUT', message: (hidden
       ? 'ChatGPT is hidden and rendering may be paused. Wake/unlock the screen and show the ChatGPT window. ' : '') +
-      'Retry the identical request_id and input to retrieve the existing answer; it will not resend.' };
+      recovery };
     r.elapsed_ms = Date.now() - r.started; await this.store.write(r); return r;
   }
 

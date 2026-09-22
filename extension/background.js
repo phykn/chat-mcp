@@ -34,13 +34,20 @@ function connect() {
     if (msg.revision && msg.revision !== revision) { reloadPending = true; applyUpdate(); }
     if (msg.ready) { connected = true; return; }
     if (!msg.id) return;
+    const checkDeadline = () => {
+      if (msg.expiresAt !== undefined && Date.now() >= msg.expiresAt)
+        throw Object.assign(Error('Browser command expired before execution.'), { code: 'COMMAND_EXPIRED' });
+    };
     running++;
     try {
+      checkDeadline();
       const tab = await chrome.tabs.get(target);
       if (!current()) return;
+      checkDeadline();
       if (!isChat(tab)) throw Error('Connected tab left ChatGPT.');
       const before = await snapshot(target);
       if (!current()) return;
+      checkDeadline();
       // Hidden ChatGPT tabs can stop rendering partway through a streamed answer.
       // Only the active request may reveal its own tab; health checks stay passive.
       const b = msg.command === 'snapshot' && msg.args?.binding;
@@ -52,10 +59,11 @@ function connect() {
         if (!current()) return;
       }
       let value;
+      checkDeadline();
       if (msg.command === 'new') {
         if (before.error || before.value.url !== msg.args.expectedUrl || before.value.draft.trim() || before.value.generating)
           throw Error('Target changed or composer occupied.');
-        await chrome.tabs.update(target, { url: home });
+        await chrome.tabs.update(target, { url: home, active: true });
         value = { navigating: true };
       } else {
         const response = msg.command === 'snapshot' ? before : await chrome.tabs.sendMessage(target, msg);
@@ -64,7 +72,7 @@ function connect() {
       }
       reply({ id: msg.id, value });
     } catch (error) {
-      reply({ id: msg.id, error: { code: 'CONTENT_UNAVAILABLE', message: String(error) } });
+      reply({ id: msg.id, error: { code: error.code || 'CONTENT_UNAVAILABLE', message: String(error) } });
     } finally { running--; applyUpdate(); }
   };
   ws.onclose = () => { clearInterval(heartbeat); if (socket === ws) { socket = undefined; connected = false; if (tabId) reconnect = setTimeout(connect, 3_000); } };
