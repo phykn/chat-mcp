@@ -5,7 +5,10 @@ import { runInNewContext } from 'node:vm';
 
 async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url: 'https://chatgpt.com/c/old' }]) {
   const sent: number[] = [], injected: number[] = [], updated: any[] = [], sockets: Socket[] = [];
-  const listeners: any = {}, pages = new Map(tabs.map(tab => [tab.id, tab])), reloads = { count: 0 };
+  const listeners: any = {}, pages = new Map(tabs.map(tab => [tab.id, { windowId: 7, ...tab }])), reloads = { count: 0 };
+  const windows: any[] = [], pageReloads: number[] = [];
+  let windowState = 'minimized', onReload: (() => void) | undefined;
+  let contentReply: ((msg: any) => any) | undefined;
   const loaded = new Set<number>();
   const clock = { now: Date.now() };
   let pageSnapshot: any;
@@ -30,22 +33,172 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
     storage: { session: storage(session), local: storage(local) },
     scripting: { executeScript: async ({ target }: any) => { injected.push(target.tabId); loaded.add(target.tabId); } },
     alarms: { create: async () => {}, clear: async () => {}, onAlarm: event('alarm') },
+    windows: { get: async () => ({ state: windowState }), update: async (id: number, change: any) => { windows.push({ id, ...change }); windowState = change.state || windowState; } },
     tabs: {
       get: async (id: number) => { if (waitForTab) await waitForTab(); const tab = pages.get(id); if (!tab) throw Error('No tab'); return tab; },
       query: async () => [...pages.values()],
-      create: async ({ url }: any) => { const tab = { id: 10 + pages.size, url }; pages.set(tab.id, tab); return tab; },
-      sendMessage: async (id: number) => { if (!loaded.has(id)) throw Error('No receiver'); sent.push(id); return { value: pageSnapshot || { url: pages.get(id)!.url, draft: '', generating: false } }; },
+      create: async ({ url }: any) => { const tab = { id: 10 + pages.size, windowId: 7, url }; pages.set(tab.id, tab); return tab; },
+      sendMessage: async (id: number, msg: any) => { if (!loaded.has(id)) throw Error('No receiver'); sent.push(id); return contentReply?.(msg) || { value: pageSnapshot || { url: pages.get(id)!.url, draft: '', generating: false } }; },
+      reload: async (id: number) => { pageReloads.push(id); onReload?.(); },
       update: async (id: number, change: any) => { updated.push({ id, ...change }); return pages.get(id); },
       onRemoved: event('removed'), onUpdated: event('updated'),
     },
   };
   const source = (await readFile('extension/background.js', 'utf8')).replace("import { token, revision } from './config.js';", "const token = 'fixture', revision = 'fixture';");
   runInNewContext(source, { chrome, WebSocket: Socket, Date: class extends Date { static now() { return clock.now; } },
-    setInterval: () => 1, clearInterval() {}, setTimeout: () => 1, clearTimeout() {} });
+    setInterval: () => 1, clearInterval() {}, setTimeout: (fn: () => void, ms: number) => { if (ms === 200) { clock.now += ms; queueMicrotask(fn); } return 1; }, clearTimeout() {} });
   const call = (command: string, tabId?: number) => new Promise<any>(resolve => listeners.message({ command, tabId }, {}, resolve));
   await call('status');
-  return { call, listeners, pages, sent, injected, updated, sockets, local, reloads, clock, setSnapshot: (s: any) => { pageSnapshot = s; }, blockGet: (wait?: () => Promise<void>) => { waitForTab = wait; } };
+  return { call, listeners, pages, sent, injected, updated, sockets, local, reloads, clock, windows, pageReloads,
+    setReply: (fn: (msg: any) => any) => { contentReply = fn; }, onReload: (fn: () => void) => { onReload = fn; },
+    setSnapshot: (s: any) => { pageSnapshot = s; }, blockGet: (wait?: () => Promise<void>) => { waitForTab = wait; } };
 }
+
+test('sending from another task restores the hidden Chrome window before input', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  const binding = { url: 'https://chatgpt.com/c/old', baseline: [], marker: '[new]' };
+  f.setSnapshot({ url: binding.url, ordinary: true, visible: false, draft: '', generating: false, messages: [] });
+  f.setReply(msg => {
+    if (msg.command === 'send') {
+      assert.deepEqual(f.windows, [{ id: 7, state: 'normal', focused: true }]);
+      return { value: { clicked: true } };
+    }
+  });
+  await f.sockets[0].signal({ id: 'send', command: 'send', args: { text: '[new] review', binding } });
+  assert.equal(f.sockets[0].replies.at(-1).value?.clicked, true);
+});
+
+test('a stalled owned response reloads once and cancellation recovers a missing Stop control', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  const binding = { url: 'https://chatgpt.com/c/old', userId: 'u1', marker: '[owned]' };
+  const state = { url: binding.url, ordinary: true, visible: true, draft: '', generating: true, canStop: false,
+    messages: [{ id: 'u1', role: 'user', text: '[owned] review' }, { id: 'a1', role: 'assistant', text: 'partial', complete: false }] };
+  f.setSnapshot(state);
+  const poll = () => f.sockets[0].signal({ id: 'poll', command: 'snapshot', args: { binding } });
+  await poll(); f.clock.now += 31_000; await poll(); await poll();
+  assert.deepEqual(f.pageReloads, [1]);
+  let done = false;
+  f.onReload(() => { done = true; f.setSnapshot({ ...state, generating: false, canStop: false }); });
+  f.setReply(msg => msg.command === 'cancel' ? done ? { value: { cancelled: true } } : { error: { code: 'STOP_UNAVAILABLE' } } : undefined);
+  await f.sockets[0].signal({ id: 'cancel', command: 'cancel', args: { binding } });
+  assert.equal(f.sockets[0].replies.at(-1).value?.cancelled, true);
+  assert.equal(f.pageReloads.length, 2);
+});
+
+test('stalled recovery preserves drafts and never reloads another tasks conversation', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  const binding = { url: 'https://chatgpt.com/c/old', userId: 'u1', marker: '[owned]' };
+  const state = { url: binding.url, ordinary: true, visible: true, draft: '', generating: true, canStop: false,
+    messages: [{ id: 'u1', role: 'user', text: '[owned]' }, { id: 'a1', role: 'assistant', text: 'partial' }] };
+  for (const change of [{ draft: 'user draft' }, { url: 'https://chatgpt.com/c/other' },
+    { messages: [{ id: 'u2', role: 'user', text: '[other]' }] }]) {
+    f.setSnapshot({ ...state, ...change });
+    await f.sockets[0].signal({ id: 'poll', command: 'snapshot', args: { binding } });
+    f.clock.now += 31_000;
+    await f.sockets[0].signal({ id: 'poll', command: 'snapshot', args: { binding } });
+    f.setReply(msg => msg.command === 'cancel' ? { error: { code: 'STOP_UNAVAILABLE' } } : undefined);
+    await f.sockets[0].signal({ id: 'cancel', command: 'cancel', args: { binding } });
+    assert.equal(f.pageReloads.length, 0);
+  }
+});
+
+test('cancellation rechecks ownership after reloading and has a bounded recovery window', async () => {
+  for (const navigated of [true, false]) {
+    const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+    const binding = { url: 'https://chatgpt.com/c/old', userId: 'u1', marker: '[owned]' };
+    const state = { url: binding.url, ordinary: true, visible: true, draft: '', generating: true,
+      messages: [{ id: 'u1', role: 'user', text: '[owned]' }] };
+    f.setSnapshot(state);
+    let cancels = 0;
+    f.setReply(msg => { if (msg.command === 'cancel') { cancels++; return { error: { code: 'STOP_UNAVAILABLE' } }; } });
+    f.onReload(() => f.setSnapshot({ ...state, ...(navigated ? { url: 'https://chatgpt.com/c/other' } : { ordinary: false }) }));
+    const started = f.clock.now;
+    await f.sockets[0].signal({ id: 'cancel', command: 'cancel', args: { binding }, expiresAt: started + 15_000 });
+    assert.equal(f.sockets[0].replies.at(-1).error.code, navigated ? 'NOT_OWNER' : 'STOP_UNAVAILABLE');
+    assert.equal(cancels, 1);
+    assert.deepEqual(f.pageReloads, [1]);
+    assert.ok(f.clock.now - started <= 10_000);
+  }
+});
+
+test('recovery handles a stall before the first assistant token', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  const binding = { url: 'https://chatgpt.com/c/old', userId: 'u1', marker: '[owned]' };
+  f.setSnapshot({ url: binding.url, ordinary: true, visible: true, draft: '', generating: false, canStop: false,
+    messages: [{ id: 'u1', role: 'user', text: '[owned]' }] });
+  const poll = () => f.sockets[0].signal({ id: 'poll', command: 'snapshot', args: { binding } });
+  await poll(); f.clock.now += 31_000; await poll();
+  assert.deepEqual(f.pageReloads, [1]);
+});
+
+test('cancellation waits for message hydration and avoids reloading a naturally completed response', async () => {
+  for (const completed of [false, true]) {
+    const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+    const binding = { url: 'https://chatgpt.com/c/old', userId: 'u1', marker: '[owned]' };
+    const state = { url: binding.url, ordinary: true, visible: true, draft: '', generating: true, canStop: false,
+      messages: [{ id: 'u1', role: 'user', text: '[owned]' }] };
+    f.setSnapshot(state);
+    let loading = false, reads = 0;
+    f.onReload(() => { loading = true; });
+    f.setReply(msg => {
+      if (msg.command === 'cancel') {
+        if (completed) f.setSnapshot({ ...state, generating: false });
+        return { error: { code: 'STOP_UNAVAILABLE' } };
+      }
+      if (loading && msg.command === 'snapshot') return { value: ++reads === 1 ? { ...state, messages: [] } : { ...state, generating: false } };
+    });
+    await f.sockets[0].signal({ id: 'cancel', command: 'cancel', args: { binding } });
+    assert.equal(f.sockets[0].replies.at(-1).value?.cancelled, true);
+    assert.equal(f.pageReloads.length, completed ? 0 : 1);
+  }
+});
+
+test('an accepted Stop is not reported complete while its rendering is still stuck', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  const binding = { url: 'https://chatgpt.com/c/old', userId: 'u1', marker: '[owned]' };
+  const state = { url: binding.url, ordinary: true, visible: true, draft: '', generating: true, canStop: false,
+    messages: [{ id: 'u1', role: 'user', text: '[owned]' }] };
+  f.setSnapshot(state);
+  f.setReply(msg => msg.command === 'cancel' ? { value: { cancelled: true } } : undefined);
+  f.onReload(() => f.setSnapshot({ ...state, generating: false }));
+  await f.sockets[0].signal({ id: 'cancel', command: 'cancel', args: { binding } });
+  assert.deepEqual(f.pageReloads, [1]);
+  assert.equal(f.sockets[0].replies.at(-1).value?.cancelled, true);
+});
+
+test('a Stop control restored by reloading is used before confirming cancellation', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  const binding = { url: 'https://chatgpt.com/c/old', userId: 'u1', marker: '[owned]' };
+  const state = { url: binding.url, ordinary: true, visible: true, draft: '', generating: true, canStop: false,
+    messages: [{ id: 'u1', role: 'user', text: '[owned]' }] };
+  f.setSnapshot(state);
+  let calls = 0;
+  f.onReload(() => f.setSnapshot({ ...state, canStop: true }));
+  f.setReply(msg => {
+    if (msg.command === 'cancel') {
+      if (++calls === 1) return { error: { code: 'STOP_UNAVAILABLE' } };
+      f.setSnapshot({ ...state, generating: false });
+      return { value: { cancelled: true } };
+    }
+  });
+  await f.sockets[0].signal({ id: 'cancel', command: 'cancel', args: { binding } });
+  assert.equal(f.sockets[0].replies.at(-1).value?.cancelled, true);
+  assert.equal(calls, 2);
+});
+
+test('a sent request can be cancelled while preserving the users next draft', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  const binding = { url: 'https://chatgpt.com/c/old', userId: 'u1', marker: '[owned]' };
+  const state = { url: binding.url, ordinary: true, visible: true, draft: 'next question', generating: true, canStop: true,
+    messages: [{ id: 'u1', role: 'user', text: '[owned]' }] };
+  f.setSnapshot(state);
+  f.setReply(msg => {
+    if (msg.command === 'cancel') { f.setSnapshot({ ...state, generating: false }); return { value: { cancelled: true } }; }
+  });
+  await f.sockets[0].signal({ id: 'cancel', command: 'cancel', args: { binding } });
+  assert.equal(f.sockets[0].replies.at(-1).value?.cancelled, true);
+  assert.equal(f.pageReloads.length, 0);
+});
 
 test('a command that expires while locating the tab never reaches its content script', async () => {
   const f = await fixture();

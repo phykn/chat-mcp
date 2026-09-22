@@ -116,3 +116,12 @@ test('normalization cannot turn a relative path into a Windows drive path', () =
     assert.throws(() => safePath(path), (e: any) => e.code === 'INVALID_PATH');
   }
 });
+
+test('a source package named build is reviewed instead of classified as build output', async () => {
+  const root = await repo();
+  await mkdir(join(root, 'src', 'build'), { recursive: true });
+  await writeFile(join(root, 'src', 'build', 'trainer.py'), 'SOURCE_TRAINER');
+  const material = await collectReview({ repo_path: root, scope: 'working_tree', paths: ['src/build'] });
+  assert.deepEqual(material.files, ['src/build/trainer.py']);
+  assert.match(material.prompt, /SOURCE_TRAINER/);
+});

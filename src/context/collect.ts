@@ -27,7 +27,7 @@ export function safePath(path: string) {
   return normalized;
 }
 export function exclusion(path: string): string | undefined {
-  if (/(^|\/)(node_modules|vendor|dist|build|coverage|\.git|\.venv|\.chat-mcp)(\/|$)/i.test(path)) return 'generated/dependency/internal';
+  if (/(^|\/)(node_modules|vendor|dist|coverage|\.git|\.venv|\.chat-mcp)(\/|$)/i.test(path) || /^build(\/|$)/i.test(path)) return 'generated/dependency/internal';
   if (/^extension\/config\.js$|(^|\/)bridge-token$/i.test(path)) return 'local pairing credential';
   if (/(^|\/)(\.env(?:\..*)?|\.npmrc|\.pypirc|credentials(?:\..*)?|secrets?(?:\..*)?|id_rsa|id_ed25519)$/i.test(path) ||
       /\.(pem|p12|pfx|key|keystore)$/i.test(path)) return 'credential file';

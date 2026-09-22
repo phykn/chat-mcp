@@ -39,7 +39,7 @@ Then:
 
 You can also ask for a structure or readability review of existing code. `review_with_chatgpt` with `scope: working_tree` accepts file or folder `paths` and includes their current contents even without a diff. Without paths, it prefers changed files, or reviews current tracked files when there are no eligible changes. `staged` and `branch` remain limited to changes in those scopes.
 
-Keep the connected ChatGPT tab open, Chrome visible, and your PC awake during requests. The bridge starts when needed; Chrome reconnects automatically after restarting. If you close the tab, click **Open ChatGPT** in the extension popup.
+Keep the connected ChatGPT tab open and your PC awake during requests. Requests activate that tab and restore its Chrome window if minimized. The bridge starts when needed; Chrome reconnects automatically after restarting. If you close the tab, click **Open ChatGPT** in the extension popup.
 
 ## Update
 
@@ -61,6 +61,8 @@ npm run doctor
 Checks plugin activation, extension files, MCP startup, and ChatGPT readiness without sending a chat request. Follow the reported next step.
 
 Requests automatically keep reading the existing response after a lost send acknowledgement or a temporary connection failure. New-chat preparation waits for the page to become ready, and response reading tolerates a page reload during generation. If recovery times out, retry with the **same request ID and identical inputs**; it will not send the prompt again. To stop recovery, use `chatgpt_cancel` with that ID. Do not create replacement requests while one remains unresolved.
+
+If an owned response stalls without a Stop control, the extension reloads that conversation once to recover its state. Cancellation also recovers a missing Stop control by reloading and checking ownership again. Existing drafts are preserved. These repairs apply to the shared extension, including requests from other Codex tasks.
 
 Large inputs get up to 60 seconds for the editor to accept and send them. Preparation, sending, and response reading still share the request's five-minute limit.
 

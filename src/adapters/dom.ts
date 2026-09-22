@@ -53,6 +53,7 @@ export function browserSnapshot(): Snapshot {
   return { url: location.href, draft: editor ? composerText(editor) : '',
     ordinary: location.origin === 'https://chatgpt.com' && !!editor && !selectedWork && (selectedChat || chatThread),
     visible: document.visibilityState === 'visible',
+    canStop: !!stopButton(),
     generating: !!stopButton() || (streaming && !messages.filter(m => m.role === 'assistant').at(-1)?.complete), messages,
     error: [...document.querySelectorAll('[role="alert"]')].map(e => e.textContent || '').filter(Boolean).join('\n') || undefined };
 }

@@ -9,6 +9,7 @@ export interface Snapshot {
   draft: string;
   generating: boolean;
   visible?: boolean;
+  canStop?: boolean;
   messages: { id: string; role: string; text: string; complete: boolean }[];
   error?: string;
 }

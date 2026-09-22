@@ -3,6 +3,12 @@ const home = 'https://chatgpt.com/';
 const isChat = tab => tab.url?.startsWith(home);
 let socket, tabId, reconnect, connected = false, connectionError;
 let running = 0, reloadPending = false;
+let progress;
+const owns = (s, b) => {
+  const user = s?.messages?.filter(m => m.role === 'user').at(-1);
+  return !!(b?.userId && s?.ordinary && s.url === b.url && user?.id === b.userId && user.text.includes(b.marker));
+};
+const reloadable = (s, b) => owns(s, b) && !s.draft.trim() && /^https:\/\/chatgpt\.com\/c\/(?!WEB:)[^/?#]+$/.test(s.url);
 function applyUpdate() {
   if (reloadPending && !running) { reloadPending = false; chrome.runtime.reload(); }
 }
@@ -45,28 +51,79 @@ function connect() {
       if (!current()) return;
       checkDeadline();
       if (!isChat(tab)) throw Error('Connected tab left ChatGPT.');
-      const before = await snapshot(target);
+      let before = await snapshot(target);
       if (!current()) return;
       checkDeadline();
-      // Hidden ChatGPT tabs can stop rendering partway through a streamed answer.
-      // Only the active request may reveal its own tab; health checks stay passive.
-      const b = msg.command === 'snapshot' && msg.args?.binding;
-      const s = before.value;
-      const user = s?.messages?.filter(m => m.role === 'user').at(-1);
-      if (b?.userId && s?.visible === false && s.ordinary && s.url === b.url &&
-          user?.id === b.userId && user.text.includes(b.marker)) {
+      const b = msg.args?.binding;
+      let s = before.value;
+      const preparing = msg.command === 'send' && b && s?.ordinary && s.url === b.url &&
+        !s.draft.trim() && !s.generating && JSON.stringify(s.messages.map(m => m.id)) === JSON.stringify(b.baseline);
+      // Selecting a tab alone does not restore a minimized Chrome window.
+      if (preparing || (owns(s, b) && (s.visible === false || msg.command === 'cancel'))) {
         await chrome.tabs.update(target, { active: true });
+        if (!current()) return;
+        checkDeadline();
+        const window = await chrome.windows.get(tab.windowId);
+        if (!current()) return;
+        checkDeadline();
+        await chrome.windows.update(tab.windowId, { ...(window.state === 'minimized' ? { state: 'normal' } : {}), focused: true });
+        if (!current()) return;
+        checkDeadline();
+        before = await snapshot(target); s = before.value;
         if (!current()) return;
       }
       let value;
       checkDeadline();
+      if (msg.command === 'snapshot' && reloadable(s, b) && s.visible !== false && s.canStop === false) {
+        const answer = s.messages.slice(s.messages.findIndex(m => m.id === b.userId) + 1).filter(m => m.role === 'assistant').at(-1);
+        if (!answer?.complete) {
+          const key = b.url + b.userId;
+          const text = answer?.text || '';
+          if (progress?.key !== key) progress = { key, text, since: Date.now(), reloaded: false };
+          if (progress.text !== text) { progress.text = text; progress.since = Date.now(); }
+          if (!progress.reloaded && Date.now() - progress.since >= 30_000) {
+            progress.reloaded = true;
+            await chrome.tabs.reload(target);
+          }
+        }
+      } else if (msg.command === 'snapshot' && owns(s, b) && progress?.key === b.url + b.userId) {
+        progress.since = Date.now();
+      }
       if (msg.command === 'new') {
         if (before.error || before.value.url !== msg.args.expectedUrl || before.value.draft.trim() || before.value.generating)
           throw Error('Target changed or composer occupied.');
         await chrome.tabs.update(target, { url: home, active: true });
         value = { navigating: true };
       } else {
-        const response = msg.command === 'snapshot' ? before : await chrome.tabs.sendMessage(target, msg);
+        let response = msg.command === 'snapshot' ? before : await chrome.tabs.sendMessage(target, msg);
+        if (msg.command === 'cancel' && b?.userId && (response.value?.cancelled || response.error?.code === 'STOP_UNAVAILABLE')) {
+          const limit = Math.min(msg.expiresAt ?? Infinity, Date.now() + 10_000), settle = Date.now() + 1_000;
+          let reloaded = false, stopped = !!response.value?.cancelled, confirmed = false;
+          while (current() && Date.now() < limit) {
+            checkDeadline();
+            let ready;
+            try { ready = (await snapshot(target)).value; } catch { /* Navigation may temporarily remove the listener. */ }
+            if (!current()) return;
+            checkDeadline();
+            const user = ready?.messages?.filter(m => m.role === 'user').at(-1);
+            if ((ready?.url && ready.url !== b.url) ||
+                (ready?.messages?.some(m => m.id === b.userId) && user?.id !== b.userId))
+              throw Object.assign(Error('Request ownership changed during cancellation.'), { code: 'NOT_OWNER' });
+            if (owns(ready, b)) {
+              if (!ready.generating) { confirmed = true; response = { value: { cancelled: true } }; break; }
+              const noStop = ready.canStop === false || (ready.canStop === undefined && response.error?.code === 'STOP_UNAVAILABLE');
+              if (!reloaded && reloadable(ready, b) && noStop && (!stopped || Date.now() >= settle)) {
+                await chrome.tabs.reload(target); reloaded = true; stopped = false;
+              } else if (!stopped && !noStop) {
+                response = await chrome.tabs.sendMessage(target, msg);
+                stopped = !!response.value?.cancelled;
+                if (response.error && !['STOP_UNAVAILABLE', 'CONTENT_UNAVAILABLE'].includes(response.error.code)) break;
+              }
+            }
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+          if (!confirmed && !response.error) response = { error: { code: 'STOP_UNAVAILABLE', message: 'Cancellation was requested but the page has not confirmed that generation stopped. Retry cancellation with the same request ID.' } };
+        }
         reply({ ...response, id: msg.id });
         return;
       }
