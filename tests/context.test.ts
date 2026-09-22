@@ -65,6 +65,33 @@ test('ask context reports omissions and missing files explicitly', async () => {
   await assert.rejects(collectAsk({ prompt: 'read', repo_path: root, context_paths: ['missing'] }), (e: any) => e.code === 'FILE_NOT_FOUND');
 });
 
+test('a clean repository can be reviewed without inventing a diff', async () => {
+  const root = await repo();
+  await writeFile(join(root, 'screenshot.jpg'), Buffer.from([0, 1, 2]));
+  for (const paths of [undefined, ['demo.py']]) {
+    const material = await collectReview({ repo_path: root, scope: 'working_tree', paths, question: 'Review structure.' });
+    assert.deepEqual(material.files, ['demo.py']);
+    assert.match(material.prompt, /CURRENT FILE \(no diff\)/);
+    assert.match(material.prompt, /1: def add/);
+  }
+});
+
+test('selected folders include unchanged code alongside changes without widening staged reviews', async () => {
+  const root = await repo();
+  await mkdir(join(root, 'src'));
+  await writeFile(join(root, 'src', 'stable.ts'), 'UNCHANGED_SOURCE');
+  await writeFile(join(root, 'src', 'changed.ts'), 'BEFORE');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'source');
+  await writeFile(join(root, 'src', 'changed.ts'), 'AFTER');
+  git(root, 'add', '.');
+  const current = await collectReview({ repo_path: root, scope: 'working_tree', paths: ['src'] });
+  assert.deepEqual(current.files, ['src/changed.ts', 'src/stable.ts']);
+  assert.match(current.prompt, /UNCHANGED_SOURCE/);
+  assert.match(current.prompt, /DIFF "src\/changed.ts"/);
+  const staged = await collectReview({ repo_path: root, scope: 'staged', paths: ['src'] });
+  assert.deepEqual(staged.files, ['src/changed.ts']);
+});
+
 test('dot segments cannot bypass pairing credential exclusions', async () => {
   const root = await repo();
   await mkdir(join(root, 'extension'));

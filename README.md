@@ -37,6 +37,8 @@ Then:
 
 > Use Chat MCP to review my changes.
 
+You can also ask for a structure or readability review of existing code. `review_with_chatgpt` with `scope: working_tree` accepts file or folder `paths` and includes their current contents even without a diff. Without paths, it prefers changed files, or reviews current tracked files when there are no eligible changes. `staged` and `branch` remain limited to changes in those scopes.
+
 Keep the connected ChatGPT tab open, Chrome visible, and your PC awake during requests. The bridge starts when needed; Chrome reconnects automatically after restarting. If you close the tab, click **Open ChatGPT** in the extension popup.
 
 ## Update

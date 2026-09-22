@@ -28,7 +28,7 @@ server.registerTool('chatgpt_ask', {
   inputSchema: { request_id: id, prompt: nonblank.max(48_000), repo_path: z.string().optional(), context_paths: paths, conversation_handle: nonblank.optional() },
 }, input => guard(() => runner.run(input, () => collectAsk(input))));
 server.registerTool('review_with_chatgpt', {
-  description: 'Use first for substantial code reviews and once after non-trivial implementation. Collect the diff and matching file contents directly from repo_path; no need to paste code. Narrow paths for focused reviews. Return actionable findings.',
+  description: 'Review code structure, readability, or changes directly from repo_path. With working_tree, supplied file or folder paths include unchanged code and available diffs; a clean repository can also be reviewed. Without paths, prefer changed files when present. staged and branch review changes only. No need to paste code. Return actionable findings.',
   inputSchema: { request_id: id, repo_path: z.string(), scope: z.enum(['working_tree', 'staged', 'branch']), base_ref: z.string().optional(), paths, question: z.string().max(8_000).optional() },
 }, input => guard(() => runner.run(input, () => collectReview(input))));
 server.registerTool('chatgpt_health', { description: 'Check once before the first request. Returns ready and a next_action for setup, connection, or recovery; no chat content is exposed.',

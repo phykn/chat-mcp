@@ -9,7 +9,7 @@ Use the Chat MCP tools to replace a substantial analysis pass, then verify the a
 
 ## Choose the tool
 
-- **Code review:** call `review_with_chatgpt` before doing a full manual review. For non-trivial implementation, call it once after the changes and relevant checks are ready. Use `working_tree` for uncommitted changes, `staged` for staged changes, or `branch` with the actual `base_ref` for committed branch changes.
+- **Code review:** call `review_with_chatgpt` before doing a full manual review. For non-trivial implementation, call it once after the changes and relevant checks are ready. Use `working_tree` for current code or uncommitted changes: supplied file and folder `paths` include unchanged files as well as diffs. Without paths, it prefers changed files, or current tracked files when the repository is clean. No diff is required for structure or readability reviews. Use `staged` for staged changes, or `branch` with the actual `base_ref` for committed branch changes.
 - **Design or debugging:** call `chatgpt_ask` early when comparing approaches or diagnosing a problem across several files. State the decision or symptoms and request concise evidence and next steps.
 - **Small changes:** handle typos, formatting, simple renames, and obvious fixes directly. Do not add a review solely to use the plugin.
 
