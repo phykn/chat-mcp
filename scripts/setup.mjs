@@ -117,6 +117,8 @@ function removeStandalone(text, parse) {
 }
 
 async function main() {
+  if (Number(process.versions.node.split('.')[0]) < 22)
+    throw Error('Node.js 22 이상을 설치하고 터미널을 다시 연 뒤 npm run setup을 실행하세요.');
   const root = fileURLToPath(new URL('../', import.meta.url));
   const dataDir = resolve(process.env.CHAT_MCP_DATA_DIR || join(homedir(), '.chat-mcp'));
   const codexHome = resolve(process.env.CODEX_HOME || join(homedir(), '.codex'));
@@ -126,13 +128,17 @@ async function main() {
     const result = spawnSync(process.execPath, [npm, ...args], { cwd: root, stdio: 'inherit', windowsHide: true });
     if (result.error || result.status !== 0) throw Error(`npm ${args.join(' ')} failed; setup stopped.`);
   }
-  console.log('Installing dependencies and building…');
-  run(['ci']);
+  console.log('Chat MCP 설치를 시작합니다. 플러그인 등록과 실행 파일 준비를 자동으로 진행합니다.');
+  console.log('\n[1/4] 의존성 설치');
+  run(['ci', '--include=dev']);
+  console.log('\n[2/4] MCP 서버와 Chrome 확장 빌드');
   run(['run', 'build']);
+  console.log('\n[3/4] Codex 플러그인 설치 및 Chrome 확장 준비');
   const plugin = await configure({ root, codexHome, dataDir });
-  const { ensureBridge } = await import('../dist/core/bridge-process.js');
-  await ensureBridge(dataDir);
-  console.log(`\nInstalled ${plugin.selector}.\n\nOne-time Chrome setup:\n1. Open chrome://extensions and enable Developer mode.\n2. Click Load unpacked and select:\n   ${plugin.extensionDir}\nChatGPT opens and connects automatically. Sign in if needed and select Chat if shown.\nFuture setup updates apply automatically to the connected extension.\n\nStart a new Codex task to use Chat MCP.\nPlugin: codex://plugins/chat-mcp?marketplacePath=${encodeURIComponent(plugin.catalog)}`);
+  console.log(`설치 완료: ${plugin.selector}`);
+  const { finishSetup } = await import('./onboarding.mjs');
+  await finishSetup({ extensionDir: plugin.extensionDir,
+    interactive: !process.argv.includes('--non-interactive') && !!(process.stdin.isTTY && process.stdout.isTTY) });
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(error => { console.error(`Setup failed: ${error.message}`); process.exitCode = 1; });

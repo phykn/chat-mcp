@@ -14,6 +14,7 @@
     "start": "node dist/main.js",
     "bridge": "node dist/bridge.js",
     "setup": "node scripts/setup.mjs",
+    "doctor": "node scripts/doctor.mjs",
     "recover-lock": "tsx scripts/recover-lock.ts"
   },
   "dependencies": {

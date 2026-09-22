@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, copyFile, cp } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, copyFile, cp, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
 import { configure } from '../scripts/setup.mjs';
+import { diagnose, checkMcp } from '../scripts/doctor.mjs';
+import { finishSetup } from '../scripts/onboarding.mjs';
+import { PassThrough } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -124,4 +127,114 @@ test('plugin setup preserves unrelated catalog entries and refuses a conflicting
   await writeFile(catalog, conflicting);
   await assert.rejects(configure(options), /different chat-mcp plugin/);
   assert.equal(await readFile(catalog, 'utf8'), conflicting);
+});
+
+test('doctor checks setup and activation before starting MCP', async () => {
+  const options = await fixture();
+  let calls = 0;
+  const probe = async () => { calls++; return { ready: true, browser: 'connected' }; };
+  assert.equal((await diagnose({ ...options, probe })).code, 'SETUP_REQUIRED');
+  await configure(options);
+  const file = join(options.codexHome, 'config.toml');
+  await writeFile(file, '[plugins."chat-mcp@personal"]\nenabled = false\n');
+  assert.equal((await diagnose({ ...options, probe })).code, 'PLUGIN_DISABLED');
+  assert.equal(calls, 0);
+  await configure(options);
+  await writeFile(file, '[plugins."chat-mcp@personal"]\nenabled = true\n');
+  const ready = await diagnose({ ...options, probe });
+  assert.equal(ready.ready, true);
+  assert.equal(calls, 1);
+});
+
+test('doctor points to the prepared extension and explains login and busy states', async () => {
+  const options = await fixture(), plugin = await configure(options);
+  const check = (state: object) => diagnose({ ...options, probe: async () => state });
+  const disconnected = await check({ ready: false, browser: 'unavailable', error: 'EXTENSION_DISCONNECTED' });
+  assert.equal(disconnected.ready, false);
+  assert.ok(disconnected.message.includes(plugin.extensionDir));
+  assert.ok(!disconnected.message.includes(join(options.root, 'extension')));
+  const login = await check({ ready: false, browser: 'connected', ordinary_chat: false });
+  assert.match(login.message, /로그인/);
+  const busy = await check({ ready: false, browser: 'connected', ordinary_chat: true, generating: true });
+  assert.match(busy.message, /답변 중/);
+  const draft = await check({ ready: false, browser: 'connected', ordinary_chat: true, draft_present: true });
+  assert.match(draft.message, /입력창/);
+  const pending = await check({ ready: false, browser: 'connected', ordinary_chat: true, requests: [{ status: 'unknown_commit' }] });
+  assert.match(pending.message, /기존 요청/);
+});
+
+test('doctor rejects a duplicate marketplace plugin or standalone override', async () => {
+  const options = await fixture();
+  await configure(options);
+  const file = join(options.codexHome, 'config.toml'), original = await readFile(file, 'utf8');
+  const probe = async () => { assert.fail('must not start MCP with conflicting configuration'); };
+  await writeFile(file, original + '\n[plugins."chat-mcp@chat-mcp"]\nenabled = true\n');
+  assert.equal((await diagnose({ ...options, probe })).code, 'DUPLICATE_PLUGIN');
+  await writeFile(file, original + '\n[mcp_servers.chat-mcp]\ncommand = "old"\n');
+  assert.equal((await diagnose({ ...options, probe })).code, 'SERVER_OVERRIDE');
+  assert.equal(await readFile(file, 'utf8'), original + '\n[mcp_servers.chat-mcp]\ncommand = "old"\n');
+});
+
+test('doctor reports missing extension files and a failed MCP launch', async () => {
+  const options = await fixture(), plugin = await configure(options);
+  const failed = await diagnose({ ...options, probe: async () => { throw Error('launch failed'); } });
+  assert.equal(failed.code, 'MCP_UNAVAILABLE');
+  assert.equal(failed.ready, false);
+  await unlink(join(plugin.extensionDir, 'config.js'));
+  const missing = await diagnose({ ...options, probe: async () => { assert.fail('must not start MCP'); } });
+  assert.equal(missing.code, 'SETUP_REQUIRED');
+  assert.match(missing.message, /확장 파일/);
+});
+
+test('doctor starts MCP over stdio and calls only health', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'chat-mcp-diagnose space-'));
+  const code = `
+    import { McpServer } from ${JSON.stringify(import.meta.resolve('@modelcontextprotocol/sdk/server/mcp.js'))};
+    import { StdioServerTransport } from ${JSON.stringify(import.meta.resolve('@modelcontextprotocol/sdk/server/stdio.js'))};
+    const server = new McpServer({name:'doctor-fixture',version:'1'});
+    server.registerTool('chatgpt_health', {inputSchema:{}}, () => ({content:[{type:'text',text:JSON.stringify({ready:true,browser:'connected'})}]}));
+    await server.connect(new StdioServerTransport());
+  `;
+  await writeFile(join(root, 'server.mjs'), code);
+  const result = await checkMcp(root, { command: process.execPath, args: ['server.mjs'], cwd: '.' });
+  assert.equal(result.ready, true);
+});
+
+test('setup does not open windows or wait for input when already ready or unattended', async t => {
+  t.mock.method(console, 'log', () => {});
+  const open = async () => { assert.fail('must not open browser'); };
+  const extensionDir = 'prepared extension';
+  const ready = { ready: true, checks: [], message: 'ready' };
+  assert.equal((await finishSetup({ extensionDir, interactive: true, open, check: async () => ready })).ready, true);
+  const waiting = { ready: false, checks: [], code: 'EXTENSION_DISCONNECTED', message: 'waiting' };
+  assert.equal((await finishSetup({ extensionDir, interactive: false, open, check: async () => waiting })).ready, false);
+});
+
+test('setup rechecks after the Chrome step without reinstalling the plugin', async t => {
+  t.mock.method(console, 'log', () => {});
+  const input = new PassThrough(), output = new PassThrough();
+  let calls = 0, opened = '';
+  output.on('data', () => { setImmediate(() => input.write('\n')); });
+  const state = await finishSetup({ extensionDir: 'prepared extension', interactive: true, input, output,
+    open: async dir => { opened = dir; return true; },
+    check: async () => ++calls === 1
+      ? { ready: false, checks: [], code: 'EXTENSION_DISCONNECTED', message: 'waiting' }
+      : { ready: true, checks: [], message: 'ready' } });
+  assert.equal(opened, 'prepared extension');
+  assert.equal(calls, 2);
+  assert.equal(state.ready, true);
+  input.destroy(); output.destroy();
+});
+
+test('setup can defer connection without reporting success', async t => {
+  t.mock.method(console, 'log', () => {});
+  const input = new PassThrough(), output = new PassThrough();
+  output.on('data', () => { setImmediate(() => input.write('q\n')); });
+  let calls = 0;
+  const state = await finishSetup({ extensionDir: 'prepared extension', interactive: true, input, output,
+    open: async () => false,
+    check: async () => { calls++; return { ready: false, checks: [], code: 'EXTENSION_DISCONNECTED', message: 'waiting' }; } });
+  assert.equal(calls, 1);
+  assert.equal(state.ready, false);
+  input.destroy(); output.destroy();
 });
