@@ -36,8 +36,11 @@ async function execute(msg: any) {
     if (!s.ordinary || s.url !== b.url) throw fault('CONVERSATION_CHANGED', 'Current tab is not the managed ordinary Chat.');
     if (msg.command === 'cancel') {
       if (!b.userId) {
-        if (s.generating || !b.draftHash || !s.draft.trim() ||
-            !sameBaseline(s.messages.map(m => m.id), b.baseline) || await fingerprint(s.draft) !== b.draftHash)
+        if (s.generating || !b.draftHash || !sameBaseline(s.messages.map(m => m.id), b.baseline))
+          throw fault('NOT_OWNER', 'No unchanged draft belonging to this request is visible.');
+        // A previous cancellation may have cleared the draft before its reply was lost.
+        if (!s.draft.trim()) return { cancelled: true };
+        if (await fingerprint(s.draft) !== b.draftHash)
           throw fault('NOT_OWNER', 'No unchanged draft belonging to this request is visible.');
         // Hashing yields to the page: the user may type or switch chats meanwhile.
         const after = browserSnapshot();

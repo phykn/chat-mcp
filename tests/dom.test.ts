@@ -178,6 +178,12 @@ test('paragraph-based long input preserves blank lines, injects once, and only c
     assert.deepEqual(await call({ command: 'cancel', args: { binding } }), { value: { cancelled: true } });
     assert.equal((await call({ command: 'snapshot' })).value.draft.trim(), '');
     assert.equal(await page.evaluate(() => (window as any).clicks), 1);
+    assert.deepEqual(await call({ command: 'cancel', args: { binding } }), { value: { cancelled: true } }, 'retry a cancellation whose reply was lost');
+    assert.equal((await call({ command: 'cancel', args: { binding: { ...binding, baseline: ['other'] } } })).error.code, 'NOT_OWNER');
+    assert.equal((await call({ command: 'cancel', args: { binding: { ...binding, url: 'https://chatgpt.com/c/other' } } })).error.code, 'CONVERSATION_CHANGED');
+    await page.evaluate(() => { document.querySelector('#composer-submit-button')!.setAttribute('aria-label', 'Stop response'); });
+    assert.equal((await call({ command: 'cancel', args: { binding } })).error.code, 'NOT_OWNER');
+    await page.evaluate(() => { document.querySelector('#composer-submit-button')!.setAttribute('aria-label', 'Send prompt'); });
     await page.evaluate(() => { document.querySelector('#prompt-textarea')!.innerHTML = '<p>alpha</p><p><br></p><p>beta</p>'; });
     assert.equal((await call({ command: 'snapshot' })).value.draft, 'alpha\n\nbeta');
   } finally { await browser.close(); }
