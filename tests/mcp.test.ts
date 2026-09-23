@@ -35,7 +35,7 @@ test('real STDIO MCP startup, tool schemas and health', async () => {
     await client.connect(transport);
     assert.ok(client.getInstructions());
     assert.deepEqual((await client.listTools()).tools.map(t => t.name).sort(),
-      ['chatgpt_ask', 'chatgpt_cancel', 'chatgpt_health', 'review_with_chatgpt']);
+      ['chatgpt_ask', 'chatgpt_cancel', 'chatgpt_health', 'chatgpt_result', 'review_with_chatgpt']);
     const result = await client.callTool({ name: 'chatgpt_health', arguments: {} });
     const text = (result.content as any[])[0].text;
     assert.ok(['connected', 'unavailable'].includes(JSON.parse(text).browser));

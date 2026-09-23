@@ -36,4 +36,5 @@ export interface Record {
   id: string; hash: string; status: Status; started: number; updated: number;
   handle: string; binding?: Binding; material?: Omit<Material, 'prompt'>;
   answer?: string; error?: { code: string; message: string }; elapsed_ms?: number;
+  active?: boolean;
 }

@@ -5,6 +5,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { collectAsk, collectReview, safePath } from '../src/context/collect.js';
+import { maxInputLines } from '../src/core/text.js';
+
+test('line-heavy context is rejected before browser preparation even below the byte limit', async () => {
+  await assert.rejects(collectAsk({ prompt: 'x\n'.repeat(maxInputLines) }),
+    (e: any) => e.code === 'CONTEXT_TOO_LARGE' && e.message.includes('lines'));
+  const prompt = 'x\n'.repeat(maxInputLines - 1) + 'x';
+  assert.equal((await collectAsk({ prompt })).prompt, prompt);
+});
 
 function git(root: string, ...args: string[]) { return execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }); }
 async function repo() {

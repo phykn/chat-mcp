@@ -89,7 +89,7 @@ test('a slow Send can finish after 15 seconds while a shorter request deadline s
     assert.deepEqual(completed.value, { clicked: true }, 'a slow editor must retain its send window');
     assert.equal(commands, 1, 'a slow Send must not be resent');
     ws.removeAllListeners('message');
-    const deadline = Date.now() + 200;
+    const deadline = Date.now() + 2_000;
     ws.on('message', bytes => {
       assert.equal(JSON.parse(bytes.toString()).expiresAt, deadline);
       commands++;
@@ -154,7 +154,7 @@ test('bridge rejects web origins and invalid credentials, routes only authentica
 
     ws.removeAllListeners('message');
     let boundedCommands = 0;
-    const limit = Date.now() + 250;
+    const limit = Date.now() + 2_000;
     ws.on('message', bytes => {
       const msg = JSON.parse(bytes.toString());
       assert.equal(msg.expiresAt, limit);

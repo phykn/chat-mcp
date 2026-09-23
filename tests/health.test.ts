@@ -54,3 +54,15 @@ test('valid reviews are returned once, while malformed reviews retain the origin
   const ask = JSON.parse(result({ ...record, material: { ...record.material!, scope: 'ask' } }).content[0].text);
   assert.equal(ask.answer, answer);
 });
+
+test('health is not ready while context collection holds a lock before creating a record', async () => {
+  const store = new Store(await mkdtemp(join(tmpdir(), 'chat-mcp-preparing-')));
+  const release = await store.lock('collecting');
+  try {
+    const adapter = { snapshot: async () => ({ ordinary: true, draft: '', generating: false }) } as Adapter;
+    const state = await health(store, adapter);
+    assert.equal(state.ready, false);
+    assert.equal(state.operation?.request_id, 'collecting');
+    assert.equal(state.operation?.active, true);
+  } finally { await release(); }
+});

@@ -1,5 +1,5 @@
 import { browserSnapshot, stopButton } from '../src/adapters/dom.js';
-import { normalizeDraft } from '../src/core/text.js';
+import { normalizeDraft, maxInputLines } from '../src/core/text.js';
 declare const chrome: any;
 let busy = false;
 const fault = (code: string, message: string) => Object.assign(new Error(message), { code });
@@ -69,12 +69,21 @@ async function execute(msg: any) {
       return { cancelled: true };
     }
     if (msg.command !== 'send') throw fault('UNKNOWN_COMMAND', 'Unsupported command.');
+    if (msg.args.text.split('\n').length > maxInputLines + 1)
+      throw fault('CONTEXT_TOO_LARGE', 'Input exceeds the editor line limit; narrow the source paths. Send was not clicked.');
     if (s.draft.trim() || s.generating) throw fault('DRAFT_PRESENT', 'Composer is occupied.');
     if (!sameBaseline(s.messages.map(m => m.id), b.baseline)) throw fault('CONVERSATION_CHANGED', 'Message baseline changed.');
     const editor = document.querySelector<HTMLElement>('#prompt-textarea')!;
     editor.focus();
-    // Native plain text avoids rich-text conversion and ChatGPT's paste-to-file flow.
-    if (!document.execCommand('insertText', false, msg.args.text))
+    // A single paragraph with hard breaks avoids insertText creating a paragraph
+    // transaction for every source line. textContent escapes all source markup.
+    const block = document.createElement('span');
+    block.style.whiteSpace = 'pre-wrap';
+    block.textContent = normalizeDraft(msg.args.text);
+    const html = block.outerHTML.replace(/\n/g, '<br>');
+    const range = document.createRange(); range.selectNodeContents(editor);
+    const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+    if (!document.execCommand('insertHTML', false, html))
       throw fault('INPUT_FAILED', 'Browser rejected text input.');
     await waitForInput(msg.args.text);
     const after = browserSnapshot();

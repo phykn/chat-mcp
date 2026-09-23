@@ -5,7 +5,7 @@ import { Fault, type Adapter, type Record, type Material, type Snapshot } from '
 import { normalizeDraft } from './text.js';
 import { isTerminal, isPending, isCancellable, isSendRejected, isConnectionError } from './request.js';
 
-const recovery = 'Retry the identical request_id and input to retrieve the existing answer; it will not resend.';
+const recovery = 'Call chatgpt_result with this request_id to recover the existing answer without resending, or chatgpt_cancel to stop it.';
 
 export class Orchestrator {
   constructor(public store: Store, public adapter: Adapter,
@@ -13,7 +13,11 @@ export class Orchestrator {
 
   async run(input: { request_id: string; conversation_handle?: string }, collect: () => Promise<Material>) {
     const started = Date.now();
-    const release = await this.store.lock();
+    const cached = await this.store.read(input.request_id);
+    if (cached && cached.hash !== hash(input)) throw new Fault('REQUEST_ID_CONFLICT', 'Same request_id has different input.');
+    if (cached && isTerminal(cached)) return cached;
+    if (cached && isPending(cached)) return this.retrieve(input.request_id);
+    const release = await this.store.lock(input.request_id);
     const deadline = started + this.timeout;
     let r: Record | undefined;
     try {
@@ -28,7 +32,8 @@ export class Orchestrator {
       }
       const records = await this.store.records();
       if (records.some(x => x.id !== input.request_id && isPending(x)))
-        throw new Fault('BUSY', 'Resolve the outstanding request using the same request_id or cancel it first.');
+        throw new Fault('BUSY', 'Use chatgpt_result or chatgpt_cancel for the outstanding request first.',
+          { request_id: records.find(x => x.id !== input.request_id && isPending(x))!.id });
       let url: string | undefined;
       if (input.conversation_handle) {
         const previous = records.filter(x => x.handle === input.conversation_handle && x.status === 'completed')
@@ -71,6 +76,41 @@ export class Orchestrator {
       const err = e instanceof Fault ? e : new Fault('UI_ERROR', String(e));
       r.status = r.status === 'prepared' ? 'failed' : r.binding?.userId ? 'timed_out_after_send' : 'unknown_commit';
       r.error = { code: err.code, message: err.message + (isPending(r) ? ` ${recovery}` : '') };
+      r.elapsed_ms = Date.now() - r.started;
+      await this.store.write(r);
+      return r;
+    } finally { await release(); }
+  }
+
+  async retrieve(id: string): Promise<Record> {
+    let r = await this.store.read(id);
+    if (!r) throw new Fault('NOT_FOUND', 'Unknown request_id.');
+    if (isTerminal(r)) return r;
+    let release;
+    try { release = await this.store.lock(id); }
+    catch (e) {
+      if (e instanceof Fault && e.code === 'BUSY') {
+        r = (await this.store.read(id))!;
+        const owner = await this.store.lockInfo();
+        return { ...r, active: !!owner?.active && (!owner.request_id || owner.request_id === id) };
+      }
+      throw e;
+    }
+    try {
+      r = (await this.store.read(id))!;
+      if (isTerminal(r)) return r;
+      if (r.status === 'prepared') {
+        // A worker cannot click Send until its durable status becomes sending.
+        r.status = 'failed';
+        r.error = { code: 'INTERRUPTED_BEFORE_SEND', message: 'Worker stopped before sending. Start a new request with a new ID.' };
+        await this.store.write(r);
+        return r;
+      }
+      return await this.wait(r, Date.now() + Math.min(this.timeout, 30_000));
+    } catch (e) {
+      const err = e instanceof Fault ? e : new Fault('UI_ERROR', String(e));
+      r.status = r.binding?.userId ? 'timed_out_after_send' : 'unknown_commit';
+      r.error = { code: err.code, message: `${err.message} ${recovery}` };
       r.elapsed_ms = Date.now() - r.started;
       await this.store.write(r);
       return r;
@@ -162,7 +202,7 @@ export class Orchestrator {
     await this.store.requestCancel(id);
     // The active worker polls this durable signal without queuing behind its own lock.
     let release;
-    try { release = await this.store.lock(); }
+    try { release = await this.store.lock(id); }
     catch (e) { if (e instanceof Fault && e.code === 'BUSY') return { request_id: id, status: 'cancel_requested' }; throw e; }
     try {
       const current = (await this.store.read(id))!;

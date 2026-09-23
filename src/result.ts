@@ -19,6 +19,7 @@ function formatRecord(record: Record) {
     request_id: record.id, conversation_handle: record.handle, status: record.status,
     answer: record.answer, review_scope: record.material?.scope, files: record.material?.files,
     omitted: record.material?.omitted, elapsed_ms: record.elapsed_ms, error: record.error,
+    active: record.active,
     review: undefined as z.infer<typeof reviewSchema> | undefined,
     warning: undefined as string | undefined,
   };

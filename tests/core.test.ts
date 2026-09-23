@@ -4,6 +4,7 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store, hash } from '../src/core/store.js';
+import { processIdentity } from '../src/core/process.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
 import { Fault, type Adapter, type Binding, type Snapshot, type Material, type Record } from '../src/core/types.js';
 
@@ -29,6 +30,8 @@ class Fake implements Adapter {
   async cancel(_b: Binding) { this.stops++; this.state.generating = false; }
 }
 async function setup() {
+  // OS identity lookup is setup, not part of these tiny fake-response deadlines.
+  assert.ok(await processIdentity(process.pid), 'Test worker process identity must be available');
   const store = new Store(await mkdtemp(join(tmpdir(), 'chat-mcp-core-')));
   const adapter = new Fake();
   const runner = new Orchestrator(store, adapter, 2_000, 5, 10);
@@ -106,7 +109,7 @@ test('an unrecovered connection failure remains bounded and explains same-ID rec
   const r = await runner.run({ request_id: 'offline' }, material);
   assert.equal(r.status, 'unknown_commit');
   assert.equal(r.error?.code, 'CONTENT_UNAVAILABLE');
-  assert.match(r.error!.message, /same request_id|identical request_id/);
+  assert.match(r.error!.message, /chatgpt_result.*request_id/);
   assert.ok(Date.now() - started >= 70);
   assert.ok(r.elapsed_ms! >= 0);
   assert.equal(adapter.sends, 1);
@@ -356,4 +359,33 @@ test('navigation can mount an empty user message before rendering its request ma
   };
   assert.equal((await runner.run({ request_id: 'loading-marker' }, material)).status, 'completed');
   assert.equal(adapter.sends, 1);
+});
+
+test('result recovery needs only an ID and never recollects or resends', async () => {
+  const { runner, adapter } = await setup();
+  adapter.fail = true;
+  await runner.run({ request_id: 'recover-by-id', prompt: 'original' } as any, material);
+  adapter.reply();
+  const recovered = await runner.retrieve('recover-by-id');
+  assert.equal(recovered.status, 'completed');
+  assert.equal(adapter.sends, 1);
+  adapter.snapshot = async () => { throw Error('Completed results must be offline-readable'); };
+  assert.equal((await runner.retrieve('recover-by-id')).status, 'completed');
+});
+
+test('result lookup reports an active worker without competing for the browser', async () => {
+  const { runner, adapter, store } = await setup();
+  adapter.reply = function () { this.state.generating = true; };
+  let sent!: () => void;
+  const signal = new Promise<void>(resolve => sent = resolve);
+  const write = store.write.bind(store);
+  store.write = async record => { await write(record); if (record.status === 'sent') sent(); };
+  const work = runner.run({ request_id: 'active-result' }, material);
+  await signal;
+  const state = await runner.retrieve('active-result');
+  assert.equal(state.status, 'sent');
+  assert.equal(state.active, true);
+  assert.equal(adapter.sends, 1);
+  await runner.cancel('active-result');
+  assert.equal((await work).status, 'cancelled');
 });

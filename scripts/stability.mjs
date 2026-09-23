@@ -1,8 +1,8 @@
 import { spawnSync } from 'node:child_process';
 
-const files = ['tests/core.test.ts', 'tests/bridge.test.ts', 'tests/background.test.ts', 'tests/dom.test.ts', 'tests/extension.test.ts'];
+const files = ['tests/core.test.ts', 'tests/store.test.ts', 'tests/bridge.test.ts', 'tests/background.test.ts', 'tests/dom.test.ts', 'tests/extension.test.ts'];
 for (let run = 1; run <= 10; run++) {
-  const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', '--test-timeout=30000', ...files], {
+  const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', '--test-concurrency=2', '--test-timeout=30000', ...files], {
     encoding: 'utf8', windowsHide: true, maxBuffer: 4_000_000,
   });
   if (result.status !== 0) {

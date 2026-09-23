@@ -7,7 +7,7 @@ export function isConnectionError(code: string) {
 }
 
 export function isSendRejected(code: string) {
-  return code === 'DRAFT_PRESENT' || draftErrors.includes(code);
+  return code === 'DRAFT_PRESENT' || code === 'CONTEXT_TOO_LARGE' || draftErrors.includes(code);
 }
 
 export function isTerminal(r: Record) {

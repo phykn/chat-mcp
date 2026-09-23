@@ -5,6 +5,7 @@ import { resolve, relative, isAbsolute } from 'node:path';
 import { Fault, type Material } from '../core/types.js';
 import { hash } from '../core/store.js';
 import { maxBytes } from '../config.js';
+import { maxInputLines } from '../core/text.js';
 
 const exec = promisify(execFile);
 async function git(repo: string, args: string[]) {
@@ -74,6 +75,8 @@ function numbered(path: string, text: string) {
 export function checkSize(material: Material) {
   const bytes = Buffer.byteLength(material.prompt);
   if (bytes > maxBytes - 100) throw new Fault('CONTEXT_TOO_LARGE', `Context is ${bytes} bytes; narrow the paths (limit ${maxBytes - 100}).`, { files: material.files, omitted: material.omitted });
+  const lines = material.prompt.split('\n').length;
+  if (lines > maxInputLines) throw new Fault('CONTEXT_TOO_LARGE', `Context is ${lines} lines; narrow the paths (editor limit ${maxInputLines} lines).`, { files: material.files, omitted: material.omitted });
   return material;
 }
 async function consistent(collect: () => Promise<Material>) {

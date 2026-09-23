@@ -27,5 +27,6 @@ Prepare routine requests mechanically: reuse the user's scope and paths, generat
 ## Continue or recover
 
 - For a follow-up, use a new `request_id` with the returned `conversation_handle`; keep that conversation open.
-- After an uncertain send or timeout, reuse the **same ID and identical inputs** to retrieve the existing response. Never start a replacement request. `chatgpt_cancel` stops the request's owned generation or clears its unchanged unsent draft.
+- After an uncertain send or timeout, call `chatgpt_result` with the original `request_id`. It recovers the existing response without resending or needing the original inputs. Retrying the original tool with identical inputs is still supported.
+- If `active` is true, wait for the original worker; do not repeatedly poll or start another request. Otherwise a result call spends at most 30 seconds recovering. If recovery still fails, report the returned error or cancel the request rather than looping indefinitely. Never start a replacement for an unresolved request. `chatgpt_cancel` stops the request's owned generation or clears its unchanged unsent draft.
 - If the plugin is unavailable, report that it was not used and continue locally. Do not claim a ChatGPT review occurred or that token savings were measured.

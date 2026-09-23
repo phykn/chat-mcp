@@ -34,5 +34,6 @@ server.registerTool('review_with_chatgpt', {
 server.registerTool('chatgpt_health', { description: 'Check once before the first request. Returns ready and a next_action for setup, connection, or recovery; no chat content is exposed.',
   inputSchema: {}, annotations: { readOnlyHint: true, openWorldHint: false } }, () => guard(() => health(store, adapter)));
 server.registerTool('chatgpt_cancel', { description: 'Cancel this request’s owned generation or clear its unchanged unsent draft. Returns cancel_requested while its worker handles cancellation.', inputSchema: { request_id: id } }, ({ request_id }) => guard(() => runner.cancel(request_id)));
+server.registerTool('chatgpt_result', { description: 'Retrieve a request by ID without original inputs or resending. Returns immediately for completed or actively running requests; otherwise recovers the existing response for up to 30 seconds. Keep the managed chat open.', inputSchema: { request_id: id } }, ({ request_id }) => guard(() => runner.retrieve(request_id)));
 await server.connect(new StdioServerTransport());
 process.stdin.on('end', () => process.exit(0));

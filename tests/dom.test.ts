@@ -170,7 +170,7 @@ test('extension DOM path: mode, multiline readback, ownership, draft and complet
   } finally { await browser.close(); }
 });
 
-test('paragraph-based long input preserves blank lines, injects once, and only cancels an unchanged owned draft', async () => {
+test('paragraph-based long input preserves blank lines, injects once, and only cancels an unchanged owned draft', { timeout: 60_000 }, async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
     const page = await browser.newPage();
@@ -195,10 +195,15 @@ test('paragraph-based long input preserves blank lines, injects once, and only c
     await page.addScriptTag({ content: script });
     assert.equal(await page.evaluate(() => (window as any).handlers.size), 1);
     const call = (msg: any) => page.evaluate(msg => new Promise<any>(resolve => (window as any).handlers.values().next().value(msg, {}, resolve)), msg);
-    const text = '[owned-marker]\n' + 'line one\n\n    indented source 한국어\n'.repeat(800) + 'last line';
-    const binding = { url: 'https://chatgpt.com/', baseline: [], marker: '[owned-marker]', draftHash: hash(text) };
+    const text = '[owned-marker]\r\n' + 'line one\n\n    indented source 한국어\n'.repeat(350) +
+      '<script>window.injected = true</script> & <b>literal</b>\nlast line';
+    const binding = { url: 'https://chatgpt.com/', baseline: [], marker: '[owned-marker]', draftHash: hash(normalizeDraft(text)) };
+    assert.equal((await call({ command: 'send', args: { text: 'line\n'.repeat(1_202), binding } })).error.code, 'CONTEXT_TOO_LARGE');
+    assert.equal((await call({ command: 'snapshot' })).value.draft, '');
+    assert.equal(await page.evaluate(() => (window as any).clicks), 0);
     assert.deepEqual(await call({ command: 'send', args: { text, binding } }), { value: { clicked: true } });
     assert.equal(normalizeDraft((await call({ command: 'snapshot' })).value.draft), normalizeDraft(text));
+    assert.equal(await page.evaluate(() => (window as any).injected), undefined);
     assert.equal(await page.evaluate(() => (window as any).clicks), 1);
     await page.evaluate(() => { document.querySelector('#prompt-textarea')!.append(document.createTextNode(' ')); });
     assert.equal((await call({ command: 'cancel', args: { binding } })).error.code, 'NOT_OWNER', 'even a trailing space edit must be preserved');

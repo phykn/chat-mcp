@@ -9,14 +9,17 @@ export async function health(store: Store, adapter: Adapter) {
   const pending = records.filter(isUnresolved);
   const recent = [...pending, ...records.filter(r => !pending.includes(r)).slice(0, 5)];
   const requests = recent.map(r => ({ request_id: r.id, status: r.status, conversation_handle: r.handle, error: r.error }));
+  const owner = await store.lockInfo();
+  const operation = owner ? { active: owner.active, request_id: owner.request_id, started: owner.started } : undefined;
   try {
     const s = await adapter.snapshot();
     const next = !s.ordinary ? 'Open ChatGPT, sign in, and select Chat in the connected tab.'
-      : pending.length ? 'Retrieve the outstanding request using its original ID and inputs, or cancel it before starting another.'
+      : operation?.active ? 'A request is active. Use chatgpt_result with its request_id for status; do not start another request.'
+      : pending.length ? 'Use chatgpt_result with the outstanding request_id to recover it, or chatgpt_cancel to stop it.'
       : s.generating ? 'Wait for the current ChatGPT answer to finish.'
       : s.draft.trim() ? 'Send or clear the draft in the connected ChatGPT tab.' : undefined;
     return { browser: 'connected', ready: !next, ordinary_chat: s.ordinary, generating: s.generating,
-      draft_present: !!s.draft.trim(), next_action: next, requests };
+      draft_present: !!s.draft.trim(), next_action: next, operation, requests };
   } catch (e) {
     const code = e instanceof Fault ? e.code : 'INTERNAL_ERROR';
     const next = code === 'EXTENSION_DISCONNECTED'
@@ -27,6 +30,6 @@ export async function health(store: Store, adapter: Adapter) {
       : code === 'BRIDGE_VERSION' ? 'Stop the old Chat MCP bridge process and retry to start the updated bridge.'
       : 'Run npm run setup from the project folder and check the connection again.';
     return { browser: 'unavailable', ready: false, error: code, next_action: next,
-      extension_folder: join(dataDir, 'extension'), requests };
+      extension_folder: join(dataDir, 'extension'), operation, requests };
   }
 }

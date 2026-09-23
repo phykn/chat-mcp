@@ -1,14 +1,14 @@
-import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dataDir } from '../src/config.js';
-const path = join(dataDir, 'requests', 'operation.lock');
+import { Store } from '../src/core/store.js';
+const store = new Store(join(dataDir, 'requests'));
 try {
-  const raw = await readFile(path, 'utf8');
-  const { pid } = JSON.parse(raw);
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error('Invalid lock; inspect manually.');
-  try { process.kill(pid, 0); throw new Error(`Owner PID ${pid} is alive. Lock retained.`); }
-  catch (e: any) { if (e.code !== 'ESRCH') throw e; }
-  if (await readFile(path, 'utf8') !== raw) throw new Error('Lock changed.');
-  await unlink(path);
-  console.log('Dead owner lock removed. Request records retained; retry the identical request.');
-} catch (e: any) { if (e.code === 'ENOENT') console.log('No stale lock.'); else { console.error(String(e)); process.exitCode = 1; } }
+  const owner = await store.lockInfo();
+  if (!owner) console.log('No stale lock.');
+  else if (owner.active) throw new Error('Owner is alive or cannot be verified. Lock retained.');
+  else {
+    const release = await store.lock();
+    await release();
+    console.log('Dead owner lock recovered. Request records retained; use chatgpt_result with the request ID.');
+  }
+} catch (e) { console.error(String(e)); process.exitCode = 1; }
