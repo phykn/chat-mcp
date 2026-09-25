@@ -8,7 +8,7 @@ const owns = (s, b) => {
   const user = s?.messages?.filter(m => m.role === 'user').at(-1);
   return !!(b?.userId && s?.ordinary && s.url === b.url && user?.id === b.userId && user.text.includes(b.marker));
 };
-const reloadable = (s, b) => owns(s, b) && !s.draft.trim() && /^https:\/\/chatgpt\.com\/c\/(?!WEB:)[^/?#]+$/.test(s.url);
+const reloadable = (s, b) => owns(s, b) && !s.draft.trim() && /^https:\/\/chatgpt\.com\/c\/(?!WEB:|local-chatgpt(?::|%3a))[^/?#]+$/i.test(s.url);
 function applyUpdate() {
   if (reloadPending && !running) { reloadPending = false; chrome.runtime.reload(); }
 }
@@ -56,10 +56,12 @@ function connect() {
       checkDeadline();
       const b = msg.args?.binding;
       let s = before.value;
-      const preparing = msg.command === 'send' && b && s?.ordinary && s.url === b.url &&
+      const preparing = ['configure', 'send'].includes(msg.command) && b && s?.ordinary && s.url === b.url &&
         !s.draft.trim() && !s.generating && JSON.stringify(s.messages.map(m => m.id)) === JSON.stringify(b.baseline);
+      const safeNew = msg.command === 'new' && !before.error && typeof msg.args?.expectedUrl === 'string' &&
+        s?.url === msg.args.expectedUrl && typeof s.draft === 'string' && !s.draft.trim() && !s.generating;
       // Selecting a tab alone does not restore a minimized Chrome window.
-      if (preparing || (owns(s, b) && (s.visible === false || msg.command === 'cancel'))) {
+      if (preparing || safeNew || (owns(s, b) && (s.visible === false || msg.command === 'cancel'))) {
         await chrome.tabs.update(target, { active: true });
         if (!current()) return;
         checkDeadline();

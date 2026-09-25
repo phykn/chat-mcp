@@ -6,8 +6,8 @@ import { runInNewContext } from 'node:vm';
 async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url: 'https://chatgpt.com/c/old' }]) {
   const sent: number[] = [], injected: number[] = [], updated: any[] = [], sockets: Socket[] = [];
   const listeners: any = {}, pages = new Map(tabs.map(tab => [tab.id, { windowId: 7, ...tab }])), reloads = { count: 0 };
-  const windows: any[] = [], pageReloads: number[] = [];
-  let windowState = 'minimized', onReload: (() => void) | undefined;
+  const windows: any[] = [], pageReloads: number[] = [], updates: any[] = [];
+  let windowState = 'minimized', onReload: (() => void) | undefined, onFocus: (() => void) | undefined;
   let contentReply: ((msg: any) => any) | undefined;
   const loaded = new Set<number>();
   const clock = { now: Date.now() };
@@ -33,14 +33,17 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
     storage: { session: storage(session), local: storage(local) },
     scripting: { executeScript: async ({ target }: any) => { injected.push(target.tabId); loaded.add(target.tabId); } },
     alarms: { create: async () => {}, clear: async () => {}, onAlarm: event('alarm') },
-    windows: { get: async () => ({ state: windowState }), update: async (id: number, change: any) => { windows.push({ id, ...change }); windowState = change.state || windowState; } },
+    windows: { get: async () => ({ state: windowState }), update: async (id: number, change: any) => {
+      windows.push({ id, ...change }); updates.push({ kind: 'window', id, ...change });
+      windowState = change.state || windowState; onFocus?.();
+    } },
     tabs: {
       get: async (id: number) => { if (waitForTab) await waitForTab(); const tab = pages.get(id); if (!tab) throw Error('No tab'); return tab; },
       query: async () => [...pages.values()],
       create: async ({ url }: any) => { const tab = { id: 10 + pages.size, windowId: 7, url }; pages.set(tab.id, tab); return tab; },
       sendMessage: async (id: number, msg: any) => { if (!loaded.has(id)) throw Error('No receiver'); sent.push(id); return contentReply?.(msg) || { value: pageSnapshot || { url: pages.get(id)!.url, draft: '', generating: false } }; },
       reload: async (id: number) => { pageReloads.push(id); onReload?.(); },
-      update: async (id: number, change: any) => { updated.push({ id, ...change }); return pages.get(id); },
+      update: async (id: number, change: any) => { updated.push({ id, ...change }); updates.push({ kind: 'tab', id, ...change }); return pages.get(id); },
       onRemoved: event('removed'), onUpdated: event('updated'),
     },
   };
@@ -49,8 +52,9 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
     setInterval: () => 1, clearInterval() {}, setTimeout: (fn: () => void, ms: number) => { if (ms === 200) { clock.now += ms; queueMicrotask(fn); } return 1; }, clearTimeout() {} });
   const call = (command: string, tabId?: number) => new Promise<any>(resolve => listeners.message({ command, tabId }, {}, resolve));
   await call('status');
-  return { call, listeners, pages, sent, injected, updated, sockets, local, reloads, clock, windows, pageReloads,
+  return { call, listeners, pages, sent, injected, updated, updates, sockets, local, reloads, clock, windows, pageReloads,
     setReply: (fn: (msg: any) => any) => { contentReply = fn; }, onReload: (fn: () => void) => { onReload = fn; },
+    onFocus: (fn: () => void) => { onFocus = fn; },
     setSnapshot: (s: any) => { pageSnapshot = s; }, blockGet: (wait?: () => Promise<void>) => { waitForTab = wait; } };
 }
 
@@ -66,6 +70,39 @@ test('sending from another task restores the hidden Chrome window before input',
   });
   await f.sockets[0].signal({ id: 'send', command: 'send', args: { text: '[new] review', binding } });
   assert.equal(f.sockets[0].replies.at(-1).value?.clicked, true);
+});
+
+test('a safe new command restores a minimized window before navigating', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  f.updated.length = 0; f.updates.length = 0;
+  f.setSnapshot({ url: 'https://chatgpt.com/c/old', ordinary: true, draft: '', generating: false, messages: [] });
+  await f.sockets[0].message('new');
+  assert.deepEqual(f.updates, [
+    { kind: 'tab', id: 1, active: true },
+    { kind: 'window', id: 7, state: 'normal', focused: true },
+    { kind: 'tab', id: 1, url: 'https://chatgpt.com/', active: true },
+  ]);
+  assert.equal(f.sockets[0].replies.at(-1).value?.navigating, true);
+});
+
+test('new does not reveal an occupied or mismatched tab and rechecks after focus', async () => {
+  for (const change of [{ draft: 'manual question' }, { generating: true }, { url: 'https://chatgpt.com/c/other' }]) {
+    const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+    f.updated.length = 0; f.updates.length = 0;
+    f.setSnapshot({ url: 'https://chatgpt.com/c/old', draft: '', generating: false, messages: [], ...change });
+    await f.sockets[0].message('new');
+    assert.deepEqual(f.windows, []);
+    assert.deepEqual(f.updated, []);
+    assert.equal(f.sockets[0].replies.at(-1).error.code, 'CONTENT_UNAVAILABLE');
+  }
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  f.updated.length = 0; f.updates.length = 0;
+  f.setSnapshot({ url: 'https://chatgpt.com/c/old', draft: '', generating: false, messages: [] });
+  f.onFocus(() => f.setSnapshot({ url: 'https://chatgpt.com/c/old', draft: 'new manual draft', generating: false, messages: [] }));
+  await f.sockets[0].message('new');
+  assert.deepEqual(f.updated, [{ id: 1, active: true }]);
+  assert.deepEqual(f.windows, [{ id: 7, state: 'normal', focused: true }]);
+  assert.equal(f.sockets[0].replies.at(-1).error.code, 'CONTENT_UNAVAILABLE');
 });
 
 test('a stalled owned response reloads once and cancellation recovers a missing Stop control', async () => {

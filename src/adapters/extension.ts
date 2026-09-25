@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Fault, type Adapter, type Binding, type Snapshot } from '../core/types.js';
+import { Fault, type Adapter, type Binding, type Snapshot, type ReasoningEffort } from '../core/types.js';
 import { ensureBridge } from '../core/bridge-process.js';
 import { commandTimeoutFor, type Command, type CommandResults, type Reply } from '../bridge-protocol.js';
 import { isConnectionError } from '../core/request.js';
@@ -63,6 +63,9 @@ export class ExtensionAdapter implements Adapter {
     if (!url && (s.url !== 'https://chatgpt.com/' || s.messages.length)) throw new Fault('CONVERSATION_CHANGED', 'New Chat is not ready.');
     if (s.draft.trim() || s.generating) throw new Fault('BUSY', 'Composer changed during preparation.');
     return s;
+  }
+  configure(binding: Binding, effort?: ReasoningEffort, deadline?: number): Promise<Snapshot> {
+    return this.rpc({ command: 'configure', args: { binding, reasoning_effort: effort } }, deadline);
   }
   async send(text: string, binding: Binding, deadline?: number) { await this.rpc({ command: 'send', args: { text, binding } }, deadline); }
   async cancel(binding: Binding) { await this.rpc({ command: 'cancel', args: { binding } }); }

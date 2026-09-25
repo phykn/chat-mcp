@@ -5,6 +5,29 @@ import { readFile } from 'node:fs/promises';
 import { hash } from '../src/core/store.js';
 import { normalizeDraft } from '../src/core/text.js';
 
+const reasoning = { effort: 'medium', raw: 'medium', label: 'Medium' };
+async function addReasoning(page: import('playwright').Page) {
+  await page.evaluate(() => {
+    const button = document.createElement('button');
+    button.setAttribute('data-selected-reasoning-effort', 'medium');
+    button.setAttribute('data-composer-navigation-target', 'reasoning');
+    button.setAttribute('aria-controls', 'reasoning-menu');
+    button.setAttribute('aria-expanded', 'false');
+    document.body.append(button);
+    const menu = document.createElement('div');
+    menu.id = 'reasoning-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('data-state', 'closed');
+    menu.innerHTML = '<div role="menuitemradio" aria-checked="true">Latest</div>';
+    document.body.append(menu);
+    button.addEventListener('click', () => {
+      const open = button.getAttribute('aria-expanded') !== 'true';
+      button.setAttribute('aria-expanded', String(open));
+      menu.setAttribute('data-state', open ? 'open' : 'closed');
+    });
+  });
+}
+
 test('a send expiring while its button renders leaves an owned draft without clicking Send', async () => {
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   try {
@@ -15,6 +38,7 @@ test('a send expiring while its button renders leaves an owned draft without cli
       <div id="prompt-textarea" contenteditable="true"></div>
       <button id="composer-submit-button" aria-label="Send prompt" disabled>Send</button>` }));
     await page.goto('https://chatgpt.com/');
+    await addReasoning(page);
     await page.evaluate(() => {
       Date.now = () => 0;
       (window as any).chrome = { runtime: { onMessage: { addListener: (fn: any) => (window as any).handler = fn } } };
@@ -24,7 +48,7 @@ test('a send expiring while its button renders leaves an owned draft without cli
     await page.addScriptTag({ content: await readFile('extension/content.js', 'utf8') });
     const pending = page.evaluate(() => new Promise<any>(resolve => (window as any).handler({
       command: 'send', expiresAt: 1,
-      args: { text: '[owned] test', binding: { url: location.href, baseline: [], marker: '[owned]' } },
+      args: { text: '[owned] test', binding: { url: location.href, baseline: [], marker: '[owned]', reasoning: { effort: 'medium', raw: 'medium', label: 'Medium' } } },
     }, {}, resolve)));
     await page.waitForFunction(() => document.querySelector('#prompt-textarea')!.textContent === '[owned] test');
     await page.evaluate(() => {
@@ -141,7 +165,8 @@ test('extension DOM path: mode, multiline readback, ownership, draft and complet
     const call = (msg: any) => page.evaluate(msg => new Promise<any>(resolve => (window as any).handler(msg, {}, resolve)), msg);
     const initial = (await call({ command: 'snapshot' })).value;
     assert.equal(initial.ordinary, true);
-    const binding = { url: initial.url, baseline: [], marker: '[marker]' };
+    await addReasoning(page);
+    const binding = { url: initial.url, baseline: [], marker: '[marker]', reasoning };
     const text = '[marker]\n한국어\n```python\ndef f():\n    return 5\n```';
     assert.deepEqual(await call({ command: 'send', args: { text, binding } }), { value: { clicked: true } });
     assert.equal((await call({ command: 'snapshot' })).value.draft, text);
@@ -197,7 +222,8 @@ test('paragraph-based long input preserves blank lines, injects once, and only c
     const call = (msg: any) => page.evaluate(msg => new Promise<any>(resolve => (window as any).handlers.values().next().value(msg, {}, resolve)), msg);
     const text = '[owned-marker]\r\n' + 'line one\n\n    indented source 한국어\n'.repeat(350) +
       '<script>window.injected = true</script> & <b>literal</b>\nlast line';
-    const binding = { url: 'https://chatgpt.com/', baseline: [], marker: '[owned-marker]', draftHash: hash(normalizeDraft(text)) };
+    await addReasoning(page);
+    const binding = { url: 'https://chatgpt.com/', baseline: [], marker: '[owned-marker]', draftHash: hash(normalizeDraft(text)), reasoning };
     assert.equal((await call({ command: 'send', args: { text: 'line\n'.repeat(1_202), binding } })).error.code, 'CONTEXT_TOO_LARGE');
     assert.equal((await call({ command: 'snapshot' })).value.draft, '');
     assert.equal(await page.evaluate(() => (window as any).clicks), 0);
@@ -223,5 +249,111 @@ test('paragraph-based long input preserves blank lines, injects once, and only c
     await page.evaluate(() => { document.querySelector('#composer-submit-button')!.setAttribute('aria-label', 'Send prompt'); });
     await page.evaluate(() => { document.querySelector('#prompt-textarea')!.innerHTML = '<p>alpha</p><p><br></p><p>beta</p>'; });
     assert.equal((await call({ command: 'snapshot' })).value.draft, 'alpha\n\nbeta');
+  } finally { await browser.close(); }
+});
+
+test('current home controls preserve mode, exact draft, send ownership and cancellation safety', async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.addInitScript('window.__name = fn => fn');
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8">
+      <button aria-pressed="true">Chat</button>
+      <button aria-pressed="false"><span>Work</span></button>
+      <div role="textbox" contenteditable="true" data-composer-markdown style="white-space:pre-wrap"></div>
+      <button type="submit" aria-label="보내기">Send</button>` }));
+    await page.goto('https://chatgpt.com/');
+    await page.evaluate(() => {
+      (window as any).chrome = { runtime: { onMessage: { addListener: (fn: any) => (window as any).handler = fn } } };
+      (window as any).clicks = 0;
+      document.querySelector('button[type="submit"]')!.addEventListener('click', () => {
+        (window as any).clicks++;
+        const user = document.createElement('div');
+        user.setAttribute('data-message-author-role', 'user');
+        user.setAttribute('data-message-id', 'u1');
+        user.textContent = '[owned]';
+        document.body.append(user);
+      });
+    });
+    await page.addScriptTag({ content: await readFile('extension/content.js', 'utf8') });
+    const call = (msg: any) => page.evaluate(msg => new Promise<any>(resolve => (window as any).handler(msg, {}, resolve)), msg);
+    const initial = (await call({ command: 'snapshot' })).value;
+    assert.equal(initial.ordinary, true);
+    assert.equal(initial.draft, '');
+    await addReasoning(page);
+    const binding = { url: initial.url, baseline: [], marker: '[owned]', reasoning };
+    const text = '[owned]\n한국어\n\ncode()';
+    assert.deepEqual(await call({ command: 'send', args: { text, binding } }), { value: { clicked: true } });
+    assert.equal((await call({ command: 'snapshot' })).value.draft, text);
+    assert.equal(await page.evaluate(() => (window as any).clicks), 1);
+    assert.deepEqual(await call({ command: 'cancel', args: { binding: { ...binding, userId: 'u1' } } }),
+      { value: { cancelled: true } });
+    assert.equal(await page.evaluate(() => (window as any).clicks), 1);
+    await page.evaluate(() => {
+      const modes = document.querySelectorAll('button[aria-pressed]');
+      modes[0].setAttribute('aria-pressed', 'false');
+      modes[1].setAttribute('aria-pressed', 'true');
+    });
+    assert.equal((await call({ command: 'snapshot' })).value.ordinary, false);
+    assert.equal((await call({ command: 'send', args: { text, binding } })).error.code, 'CONVERSATION_CHANGED');
+    assert.equal(await page.evaluate(() => (window as any).clicks), 1);
+  } finally { await browser.close(); }
+});
+
+test('current conversation markup separates completed turns from a newer partial response', async () => {
+  const browser = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page = await browser.newPage();
+    await page.addInitScript('window.__name = fn => fn');
+    await page.route('**/*', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><meta charset="utf-8">
+      <div role="textbox" contenteditable="true" data-composer-markdown></div>
+      <section data-content-search-turn-key="fallback-turn-0">
+        <div data-chatgpt-search-unit-key="fallback-turn-0:0:user" data-chatgpt-search-message-ids="u1">
+          <div data-user-message-bubble>[owned] first question</div></div>
+        <div data-chatgpt-search-unit-key="fallback-turn-0:2:assistant" data-chatgpt-search-message-ids="a1 a1">
+          <div data-markdown-text-style="assistant-message"><p>{"answer":1}</p></div></div>
+        <button aria-label="응답 다시 생성">Regenerate</button>
+      </section>
+      <section data-content-search-turn-key="fallback-turn-1">
+        <div data-chatgpt-search-unit-key="fallback-turn-1:0:user" data-chatgpt-search-message-ids="u2">
+          <div data-user-message-bubble>[owned] second question</div></div>
+        <div data-chatgpt-search-unit-key="fallback-turn-1:2:assistant" data-chatgpt-search-message-ids="a2 a2">
+          <div data-markdown-text-style="assistant-message"><p>partial reply</p></div></div>
+      </section>` }));
+    await page.goto('https://chatgpt.com/c/test');
+    await page.evaluate(() => {
+      (window as any).chrome = { runtime: { onMessage: { addListener: (fn: any) => (window as any).handler = fn } } };
+    });
+    await page.addScriptTag({ content: await readFile('extension/content.js', 'utf8') });
+    const snapshot = () => page.evaluate(() => new Promise<any>(resolve =>
+      (window as any).handler({ command: 'snapshot' }, {}, resolve)));
+    const initial = (await snapshot()).value;
+    assert.equal(initial.ordinary, true);
+    assert.deepEqual(initial.messages, [
+      { id: 'u1', role: 'user', text: '[owned] first question', complete: false },
+      { id: 'a1', role: 'assistant', text: '{"answer":1}', complete: true },
+      { id: 'u2', role: 'user', text: '[owned] second question', complete: false },
+      { id: 'a2', role: 'assistant', text: 'partial reply', complete: false },
+    ]);
+    assert.equal(initial.generating, false);
+    await page.evaluate(() => {
+      const stop = document.createElement('button');
+      stop.setAttribute('aria-label', '중지');
+      stop.textContent = 'Stop';
+      document.body.append(stop);
+    });
+    const streaming = (await snapshot()).value;
+    assert.equal(streaming.canStop, true);
+    assert.equal(streaming.generating, true);
+    assert.equal(streaming.messages.at(-1).complete, false);
+    await page.evaluate(() => {
+      document.querySelector('button[aria-label="중지"]')!.remove();
+      document.querySelector('[data-content-search-turn-key="fallback-turn-1"]')!
+        .insertAdjacentHTML('beforeend', '<button aria-label="응답 다시 생성">Regenerate</button>');
+    });
+    const completed = (await snapshot()).value;
+    assert.equal(completed.canStop, false);
+    assert.equal(completed.generating, false);
+    assert.equal(completed.messages.at(-1).complete, true);
   } finally { await browser.close(); }
 });

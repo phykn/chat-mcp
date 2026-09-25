@@ -2,6 +2,8 @@
 
 A local Codex plugin for code reviews, design comparisons, and debugging through your ChatGPT account in Chrome.
 
+Review and analysis requests run in your signed-in ChatGPT web tab. The plugin collects selected files locally and returns the answer to Codex, so the delegated analysis uses ChatGPT web access while keeping that source context out of the coordinating Codex conversation. Browser UI changes can still require compatibility updates; the recovery state below makes those failures inspectable without duplicate sends.
+
 ## Install
 
 Requires **Codex, Node.js 22+ (with npm), Git, Chrome 116+**, and a ChatGPT account.
@@ -41,6 +43,12 @@ You can also ask for a structure or readability review of existing code. `review
 
 Keep the connected ChatGPT tab open and your PC awake during requests. Requests activate that tab and restore its Chrome window if minimized. The bridge starts when needed; Chrome reconnects automatically after restarting. If you close the tab, click **Open ChatGPT** in the extension popup.
 
+## Reasoning level
+
+Both `chatgpt_ask` and `review_with_chatgpt` accept `reasoning_effort`: `low`, `medium`, `high`, or `xhigh`. Choose by task difficulty: low for bounded simple checks, medium for ordinary analysis, high for substantial reviews or debugging, and xhigh for difficult architecture or ambiguous failures. On the supported ChatGPT UI, low maps to **Instant** (`none`) and xhigh to **Extra High** (`max`). Omission keeps the current verified non-Pro setting. The selected setting remains in the shared tab after the request.
+
+Every request verifies the selected model and reasoning before sending. **Pro is never used**: Pro, unknown controls/models, or an unconfirmed requested setting stop the request before Send. Results include `requested_reasoning_effort` and `applied_reasoning` (effort, actual UI label and raw value); health exposes the observed reasoning. The current supported model entries are Latest, GPT-5.6 Sol, and GPT-5.5. An unsupported UI needs an adapter update rather than a silent fallback.
+
 ## Update
 
 From the repository folder:
@@ -62,11 +70,15 @@ Checks plugin activation, extension files, MCP startup, and ChatGPT readiness wi
 
 Requests automatically keep reading the existing response after a lost send acknowledgement or a temporary connection failure. New-chat preparation waits for the page to become ready, and response reading tolerates a page reload during generation. If recovery times out, call **`chatgpt_result` with the original request ID**. Original inputs are not needed and the prompt is never resent. Completed results are available even when the browser is offline. An active worker returns its current status immediately; recovery after interruption is limited to 30 seconds per call. To stop recovery, use `chatgpt_cancel` with that ID. Do not create replacement requests while one remains unresolved.
 
-Health reports the active operation, including context preparation before a request record exists. A crashed worker's lock is reclaimed automatically on the next operation; live workers retain exclusive ownership of the shared tab. Retrying an original tool call with the same ID and identical inputs is also supported.
+Requests are recorded before context collection or any browser preparation. A preparation failure remains available through `chatgpt_result`; replay returns that failure without sending. Start a new ID after fixing a confirmed pre-send failure. A crashed worker's lock is reclaimed automatically on the next operation; live workers retain exclusive ownership of the shared tab. Retrying an original tool call with the same ID and identical inputs is also supported. `NOT_FOUND` means no local record exists; it is not proof that an older server never sent the message.
+
+Results distinguish `send_state` (`not_sent`, `unknown`, `confirmed`), `worker_active`, `answer_state`, and `answer_complete`. `last_observation` reports the browser's last observed generation/completion state and timestamp; it is not a live guarantee. Only `answer_complete: true` is a completed answer. Cancelled fragments remain partial even when they look like a review. `cancel_requested: true` alone does not confirm cancellation: if its acknowledgement is lost, retrieve or cancel the same ID again. Follow `next_action` and `conversation_reusable`; a cancelled or failed latest request cannot reuse an older completed handle.
 
 If an owned response stalls without a Stop control, the extension reloads that conversation once to recover its state. Cancellation also recovers a missing Stop control by reloading and checking ownership again. Existing drafts are preserved. These repairs apply to the shared extension, including requests from other Codex tasks.
 
 Large inputs are inserted as one escaped text fragment with hard line breaks, then read back exactly before sending. This avoids creating an editor paragraph for every source line. Collected context is limited to **47,900 UTF-8 bytes and 1,200 lines**, including file/diff wrappers. Larger context is rejected before touching the browser with `CONTEXT_TOO_LARGE`; narrow the selected paths. The line limit prevents thousands of short lines from freezing the editor despite fitting the byte limit. Inputs get up to 60 seconds for the editor to accept and send them. Preparation, sending, and response reading still share the request's five-minute limit.
+
+Use `chatgpt_preview` before large requests to inspect `bytes`, `lines`, limits, `files`, and `omitted` without accessing Chrome or sending content. For an ask, pass `mode: ask`, `prompt`, and optional `repo_path`/`context_paths`; for a review, pass `mode: review`, `repo_path`, `scope`, and optional `paths`/`base_ref`/`question`. Preview recollects files and does not reserve them. Explicitly selected ignored paths in working-tree reviews are reported as omitted; supply individual files through `chatgpt_ask` only when intentionally needed. Credential and generated-file exclusions still apply.
 
 `COMMAND_EXPIRED` means a delayed command was stopped before execution. Cancel its request to clear any unchanged draft it owns, then start a new request with a new ID. Keep Chrome visible and the PC awake. If a response remains stuck, preserve any draft, reload the connected tab, and retrieve the request with its original ID and inputs.
 

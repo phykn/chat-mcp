@@ -10,9 +10,11 @@ import { Fault, type Adapter, type Record, type Snapshot } from '../src/core/typ
 
 test('health distinguishes ready, drafts, wrong mode, and an unavailable extension', async () => {
   const store = new Store(await mkdtemp(join(tmpdir(), 'chat-mcp-health-')));
-  const snapshot: Snapshot = { url: 'https://chatgpt.com/', ordinary: true, draft: '', generating: false, messages: [] };
+  const snapshot: Snapshot = { url: 'https://chatgpt.com/', ordinary: true, draft: '', generating: false, messages: [],
+    reasoning: { effort: 'medium', raw: 'medium', label: 'Medium' } };
   const adapter = { snapshot: async () => snapshot } as Adapter;
   assert.equal((await health(store, adapter)).ready, true);
+  assert.deepEqual((await health(store, adapter)).reasoning, snapshot.reasoning);
   snapshot.draft = 'private draft';
   const draft = await health(store, adapter);
   assert.equal(draft.ready, false);
@@ -65,4 +67,34 @@ test('health is not ready while context collection holds a lock before creating 
     assert.equal(state.operation?.request_id, 'collecting');
     assert.equal(state.operation?.active, true);
   } finally { await release(); }
+});
+
+test('cancelled fragments and pending observations cannot be mistaken for completed reviews', () => {
+  const record: Record = { id: 'cancel', hash: 'h', handle: 'handle', status: 'cancelled', started: 1, updated: 1,
+    answer: '실제 actionable', binding: { url: 'https://chatgpt.com/c/x', baseline: [], marker: 'm', userId: 'u' } };
+  const cancelled = JSON.parse(result(record).content[0].text);
+  assert.equal(cancelled.answer_complete, false);
+  assert.equal(cancelled.answer_state, 'partial');
+  assert.equal(cancelled.send_state, 'confirmed');
+  assert.equal(cancelled.conversation_reusable, false);
+  assert.equal(cancelled.worker_active, false);
+  assert.match(cancelled.next_action, /omit conversation_handle/);
+  const pending = JSON.parse(result({ ...record, status: 'timed_out_after_send', active: true }).content[0].text);
+  assert.equal(pending.worker_active, true);
+  assert.match(pending.next_action, /Wait/);
+});
+
+test('health and result expose observed and applied reasoning', async () => {
+  const store = new Store(await mkdtemp(join(tmpdir(), 'chat-mcp-reasoning-')));
+  const reasoning = { effort: 'low' as const, raw: 'none', label: 'Instant' };
+  const adapter = { snapshot: async () => ({ url: 'https://chatgpt.com/', ordinary: true, draft: '',
+    generating: false, messages: [], reasoning }) } as Adapter;
+  assert.deepEqual((await health(store, adapter)).reasoning, reasoning);
+  const r: Record = { id: 'low', hash: 'h', handle: 'handle', status: 'completed', started: 1, updated: 1,
+    requested_reasoning_effort: 'low', applied_reasoning: reasoning };
+  const formatted = JSON.parse(result(r).content[0].text);
+  assert.equal(formatted.requested_reasoning_effort, 'low');
+  assert.deepEqual(formatted.applied_reasoning, reasoning);
+  await store.write(r);
+  assert.deepEqual((await health(store, adapter)).requests[0].applied_reasoning, reasoning);
 });

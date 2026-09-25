@@ -4,14 +4,32 @@ import { mkdtemp, writeFile, rename, rm, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { collectAsk, collectReview, safePath } from '../src/context/collect.js';
+import { collectAsk, collectReview, contextMetadata, safePath } from '../src/context/collect.js';
 import { maxInputLines } from '../src/core/text.js';
 
 test('line-heavy context is rejected before browser preparation even below the byte limit', async () => {
   await assert.rejects(collectAsk({ prompt: 'x\n'.repeat(maxInputLines) }),
-    (e: any) => e.code === 'CONTEXT_TOO_LARGE' && e.message.includes('lines'));
+    (e: any) => e.code === 'CONTEXT_TOO_LARGE' && e.message.includes('lines') &&
+      e.details.lines === maxInputLines + 1 && e.details.line_limit === maxInputLines &&
+      e.details.within_limits === false);
   const prompt = 'x\n'.repeat(maxInputLines - 1) + 'x';
   assert.equal((await collectAsk({ prompt })).prompt, prompt);
+});
+
+test('preview reports exact transmitted context size, limits and file omissions', async () => {
+  const root = await repo();
+  const material = await collectAsk({ prompt: '한글', repo_path: root, context_paths: ['demo.py', '.env'] }, { preview: true });
+  const meta = contextMetadata(material);
+  assert.equal(meta.bytes, Buffer.byteLength(material.prompt));
+  assert.equal(meta.lines, material.prompt.split('\n').length);
+  assert.equal(meta.within_limits, true);
+  assert.deepEqual(meta.files, ['demo.py']);
+  assert.deepEqual(meta.omitted, [{ path: '.env', reason: 'credential file' }]);
+  const oversized = await collectAsk({ prompt: 'x'.repeat(meta.byte_limit + 1) }, { preview: true });
+  assert.equal(contextMetadata(oversized).within_limits, false);
+  await assert.rejects(collectAsk({ prompt: oversized.prompt }),
+    (e: any) => e.code === 'CONTEXT_TOO_LARGE' && e.details.bytes === oversized.prompt.length &&
+      e.details.byte_limit === meta.byte_limit);
 });
 
 function git(root: string, ...args: string[]) { return execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }); }
@@ -58,7 +76,11 @@ test('explicit paths stay inside root; oversized inputs return an error', async 
   const root = await repo();
   await assert.rejects(collectAsk({ prompt: 'read', repo_path: root, context_paths: ['../escape'] }), (e: any) => e.code === 'INVALID_PATH');
   await writeFile(join(root, 'large.txt'), 'x'.repeat(50_000));
-  await assert.rejects(collectAsk({ prompt: 'read', repo_path: root, context_paths: ['large.txt'] }), (e: any) => e.code === 'CONTEXT_TOO_LARGE');
+  await assert.rejects(collectAsk({ prompt: 'read', repo_path: root, context_paths: ['large.txt'] }),
+    (e: any) => e.code === 'CONTEXT_TOO_LARGE' && e.details.bytes === 50_000 &&
+      e.details.byte_limit < e.details.bytes && e.details.files[0] === 'large.txt');
+  await assert.rejects(collectAsk({ prompt: 'read', repo_path: root, context_paths: ['large.txt'] }, { preview: true }),
+    (e: any) => e.code === 'CONTEXT_TOO_LARGE' && e.details.bytes === 50_000);
 });
 test('path filters are literal, never git pathspec injection', async () => {
   const root = await repo();
@@ -132,4 +154,35 @@ test('a source package named build is reviewed instead of classified as build ou
   const material = await collectReview({ repo_path: root, scope: 'working_tree', paths: ['src/build'] });
   assert.deepEqual(material.files, ['src/build/trainer.py']);
   assert.match(material.prompt, /SOURCE_TRAINER/);
+});
+
+test('explicit Git-ignored working-tree paths are reported without reading their content', async () => {
+  const root = await repo();
+  await writeFile(join(root, '.gitignore'), 'private/\n');
+  await mkdir(join(root, 'private'));
+  await writeFile(join(root, 'private', 'data.txt'), 'NEVER_SEND_THIS_VALUE');
+  const material = await collectReview({ repo_path: root, scope: 'working_tree', paths: ['demo.py', 'private/data.txt'] });
+  assert.deepEqual(material.files, ['demo.py']);
+  assert.deepEqual(material.omitted, [{ path: 'private/data.txt', reason: 'ignored by Git' }]);
+  assert.doesNotMatch(material.prompt, /NEVER_SEND_THIS_VALUE/);
+  const preview = await collectReview({ repo_path: root, scope: 'working_tree', paths: ['private'] }, { preview: true });
+  assert.deepEqual(contextMetadata(preview).omitted, [{ path: 'private', reason: 'ignored by Git' }]);
+  assert.deepEqual(preview.files, []);
+});
+
+test('selected folder reports ignored children alongside tracked files', async () => {
+  const root = await repo();
+  await mkdir(join(root, 'src', 'cache'), { recursive: true });
+  await writeFile(join(root, 'src', 'module.py'), 'PUBLIC_SOURCE');
+  await writeFile(join(root, '.gitignore'), 'src/cache/\nsrc/local.txt\n');
+  git(root, 'add', '.'); git(root, 'commit', '-qm', 'source');
+  await writeFile(join(root, 'src', 'cache', 'snapshot.txt'), 'PRIVATE_SNAPSHOT');
+  await writeFile(join(root, 'src', 'local.txt'), 'PRIVATE_LOCAL');
+  const material = await collectReview({ repo_path: root, scope: 'working_tree', paths: ['src'] });
+  assert.deepEqual(material.files, ['src/module.py']);
+  assert.deepEqual(material.omitted, [
+    { path: 'src/cache', reason: 'ignored by Git' },
+    { path: 'src/local.txt', reason: 'ignored by Git' },
+  ]);
+  assert.doesNotMatch(material.prompt, /PRIVATE_SNAPSHOT|PRIVATE_LOCAL/);
 });

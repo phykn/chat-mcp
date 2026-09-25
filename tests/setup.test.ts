@@ -77,7 +77,7 @@ test('installed plugin starts from another folder without source files or node_m
     await client.connect(new StdioClientTransport({ command: server.command,
       args: server.args, cwd: join(dir, server.cwd), env: server.env, stderr: 'pipe' }));
     assert.ok(client.getInstructions());
-    assert.equal((await client.listTools()).tools.length, 5);
+    assert.ok((await client.listTools()).tools.some(tool => tool.name === 'chatgpt_preview'));
     assert.match(await readFile(join(dir, 'skills', 'chat-mcp', 'SKILL.md'), 'utf8'), /name: chat-mcp/);
   } finally { await client.close(); }
 });

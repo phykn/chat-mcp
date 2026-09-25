@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Record } from './core/types.js';
+import { isPending, isCancellable } from './core/request.js';
 
 const reviewSchema = z.object({
   findings: z.array(z.object({
@@ -19,7 +20,22 @@ function formatRecord(record: Record) {
     request_id: record.id, conversation_handle: record.handle, status: record.status,
     answer: record.answer, review_scope: record.material?.scope, files: record.material?.files,
     omitted: record.material?.omitted, elapsed_ms: record.elapsed_ms, error: record.error,
+    requested_reasoning_effort: record.requested_reasoning_effort,
+    applied_reasoning: record.applied_reasoning,
     active: record.active,
+    worker_active: record.active ?? false,
+    send_state: record.send_state ?? (record.binding?.userId || record.status === 'completed' ? 'confirmed'
+      : isPending(record) || record.status === 'cancelled' && record.binding?.draftHash ? 'unknown' : 'not_sent'),
+    answer_complete: record.status === 'completed',
+    answer_state: record.status === 'completed' ? 'complete' : record.answer ? 'partial' : 'unavailable',
+    last_observation: record.observation,
+    cancel_requested: record.cancel_requested ?? false,
+    conversation_reusable: record.status === 'completed',
+    next_action: record.status === 'completed' ? 'Use conversation_handle for a follow-up with a new request_id.'
+      : record.active ? 'Wait for the active worker; do not resend.'
+      : isPending(record) ? 'Call chatgpt_result with this request_id to recover, or chatgpt_cancel. Do not resend with a new ID.'
+      : isCancellable(record) ? 'Call chatgpt_cancel with this request_id to clear its owned draft before starting a new request.'
+      : 'Start a new request with a new request_id and omit conversation_handle. This answer is not a completed review.',
     review: undefined as z.infer<typeof reviewSchema> | undefined,
     warning: undefined as string | undefined,
   };

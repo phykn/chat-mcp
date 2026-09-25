@@ -19,11 +19,18 @@ test('blank prompts, IDs and supplied handles are rejected before browser access
       { request_id: ' \t', prompt: 'OK' },
       { request_id: 'empty-handle', prompt: 'OK', conversation_handle: '' },
       { request_id: 'blank-handle', prompt: 'OK', conversation_handle: '  ' },
+      { request_id: 'pro', prompt: 'OK', reasoning_effort: 'pro' },
+      { request_id: 'ultra', prompt: 'OK', reasoning_effort: 'ultra' },
     ]) {
       const r = await client.callTool({ name: 'chatgpt_ask', arguments: args });
       assert.equal(r.isError, true);
       assert.match((r.content as any[])[0].text, /Input validation error/);
     }
+    const invalidReview = await client.callTool({ name: 'review_with_chatgpt', arguments: {
+      request_id: 'review-pro', repo_path: dir, scope: 'working_tree', reasoning_effort: 'pro',
+    } });
+    assert.equal(invalidReview.isError, true);
+    assert.match((invalidReview.content as any[])[0].text, /Input validation error/);
   } finally { await client.close(); }
 });
 
@@ -35,7 +42,18 @@ test('real STDIO MCP startup, tool schemas and health', async () => {
     await client.connect(transport);
     assert.ok(client.getInstructions());
     assert.deepEqual((await client.listTools()).tools.map(t => t.name).sort(),
-      ['chatgpt_ask', 'chatgpt_cancel', 'chatgpt_health', 'chatgpt_result', 'review_with_chatgpt']);
+      ['chatgpt_ask', 'chatgpt_cancel', 'chatgpt_health', 'chatgpt_preview', 'chatgpt_result', 'review_with_chatgpt']);
+    const tools = (await client.listTools()).tools;
+    for (const name of ['chatgpt_ask', 'review_with_chatgpt']) {
+      const schema = tools.find(t => t.name === name)!.inputSchema as any;
+      assert.deepEqual(schema.properties.reasoning_effort.enum, ['low', 'medium', 'high', 'xhigh']);
+    }
+    const preview = await client.callTool({ name: 'chatgpt_preview', arguments: { mode: 'ask', prompt: '안녕하세요' } });
+    const metadata = JSON.parse((preview.content as any[])[0].text);
+    assert.equal(preview.isError, false);
+    assert.equal(metadata.bytes, Buffer.byteLength('안녕하세요'));
+    assert.equal(metadata.within_limits, true);
+    assert.deepEqual(metadata.files, []);
     const result = await client.callTool({ name: 'chatgpt_health', arguments: {} });
     const text = (result.content as any[])[0].text;
     assert.ok(['connected', 'unavailable'].includes(JSON.parse(text).browser));

@@ -1,5 +1,6 @@
-import { browserSnapshot, stopButton } from '../src/adapters/dom.js';
+import { browserSnapshot, stopButton, composer, sendButton } from '../src/adapters/dom.js';
 import { normalizeDraft, maxInputLines } from '../src/core/text.js';
+import { checkReasoning, configureReasoning } from '../src/adapters/reasoning.js';
 declare const chrome: any;
 let busy = false;
 const fault = (code: string, message: string) => Object.assign(new Error(message), { code });
@@ -7,10 +8,6 @@ const sameBaseline = (ids: string[], baseline: string[]) => JSON.stringify(ids) 
 async function fingerprint(text: string) {
   const bytes = new TextEncoder().encode(JSON.stringify(normalizeDraft(text)));
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(n => n.toString(16).padStart(2, '0')).join('');
-}
-function sendButton() {
-  const button = document.querySelector<HTMLButtonElement>('#composer-submit-button');
-  return button && !button.disabled && /프롬프트 보내기|Send prompt/.test(button.getAttribute('aria-label') || '') ? button : undefined;
 }
 async function waitForInput(text: string) {
   await Promise.resolve();
@@ -39,6 +36,18 @@ async function execute(msg: any) {
   try {
     const b = msg.args.binding, s = browserSnapshot();
     if (!s.ordinary || s.url !== b.url) throw fault('CONVERSATION_CHANGED', 'Current tab is not the managed ordinary Chat.');
+    if (msg.command === 'configure') {
+      const check = () => {
+        checkDeadline();
+        const now = browserSnapshot();
+        if (!now.ordinary || now.url !== b.url || now.generating || now.draft.trim() ||
+            !sameBaseline(now.messages.map(m => m.id), b.baseline))
+          throw fault('CONVERSATION_CHANGED', 'Composer changed during reasoning configuration.');
+      };
+      await configureReasoning(msg.args.reasoning_effort, check);
+      check();
+      return browserSnapshot();
+    }
     if (msg.command === 'cancel') {
       if (!b.userId) {
         if (s.generating || !b.draftHash || !sameBaseline(s.messages.map(m => m.id), b.baseline))
@@ -53,7 +62,7 @@ async function execute(msg: any) {
         if (!after.ordinary || after.url !== s.url || after.generating || after.draft !== s.draft ||
             !sameBaseline(after.messages.map(m => m.id), b.baseline))
           throw fault('NOT_OWNER', 'The draft or conversation changed during cancellation.');
-        const editor = document.querySelector<HTMLElement>('#prompt-textarea')!;
+        const editor = composer()!;
         editor.focus();
         const range = document.createRange(); range.selectNodeContents(editor);
         const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range);
@@ -73,7 +82,9 @@ async function execute(msg: any) {
       throw fault('CONTEXT_TOO_LARGE', 'Input exceeds the editor line limit; narrow the source paths. Send was not clicked.');
     if (s.draft.trim() || s.generating) throw fault('DRAFT_PRESENT', 'Composer is occupied.');
     if (!sameBaseline(s.messages.map(m => m.id), b.baseline)) throw fault('CONVERSATION_CHANGED', 'Message baseline changed.');
-    const editor = document.querySelector<HTMLElement>('#prompt-textarea')!;
+    if (!b.reasoning) throw fault('REASONING_UNAVAILABLE', 'Verified reasoning is required before sending.');
+    checkReasoning(b.reasoning);
+    const editor = composer()!;
     editor.focus();
     // A single paragraph with hard breaks avoids insertText creating a paragraph
     // transaction for every source line. textContent escapes all source markup.
@@ -86,6 +97,14 @@ async function execute(msg: any) {
     if (!document.execCommand('insertHTML', false, html))
       throw fault('INPUT_FAILED', 'Browser rejected text input.');
     await waitForInput(msg.args.text);
+    await configureReasoning(undefined, () => {
+      checkDeadline();
+      const current = browserSnapshot();
+      if (normalizeDraft(current.draft) !== normalizeDraft(msg.args.text)) throw fault('INPUT_MISMATCH', 'Owned draft changed before send.');
+      if (!current.ordinary || current.url !== b.url || current.generating || !sameBaseline(current.messages.map(m => m.id), b.baseline))
+        throw fault('CONVERSATION_CHANGED', 'Target changed before send.');
+      checkReasoning(b.reasoning);
+    });
     const after = browserSnapshot();
     if (normalizeDraft(after.draft) !== normalizeDraft(msg.args.text)) throw fault('INPUT_MISMATCH', 'Input readback differs; send was not clicked.');
     if (!after.ordinary || after.url !== b.url || after.generating || !sameBaseline(after.messages.map(m => m.id), b.baseline))
@@ -93,6 +112,7 @@ async function execute(msg: any) {
     const button = sendButton();
     if (!button) throw fault('SEND_UNAVAILABLE', 'Send control not available.');
     checkDeadline();
+    checkReasoning(b.reasoning);
     button.click();
     return { clicked: true };
   } finally { busy = false; }

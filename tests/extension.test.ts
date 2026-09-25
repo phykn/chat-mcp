@@ -61,3 +61,18 @@ test('an expired request cannot dispatch Send even when no bridge is running', a
   await assert.rejects(adapter.send('must not send', { url: home.url, baseline: [], marker: '[expired]' }, Date.now() - 1),
     (e: any) => e.code === 'COMMAND_EXPIRED');
 });
+
+test('reasoning configuration forwards the requested effort and binding to the bridge', async () => {
+  const adapter = new ExtensionAdapter();
+  const binding = { url: home.url, baseline: [], marker: '[reasoning]' };
+  const calls: unknown[] = [];
+  (adapter as any).rpc = async (command: unknown) => {
+    calls.push(command);
+    return { ...home, reasoning: { effort: 'high', raw: 'high', label: 'High' } };
+  };
+  const configured = await adapter.configure(binding, 'high');
+  assert.deepEqual(calls[0], { command: 'configure', args: { binding, reasoning_effort: 'high' } });
+  assert.equal(configured.reasoning?.raw, 'high');
+  await adapter.configure(binding);
+  assert.deepEqual(calls[1], { command: 'configure', args: { binding, reasoning_effort: undefined } });
+});

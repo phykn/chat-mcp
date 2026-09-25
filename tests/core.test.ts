@@ -6,15 +6,21 @@ import { join } from 'node:path';
 import { Store, hash } from '../src/core/store.js';
 import { processIdentity } from '../src/core/process.js';
 import { Orchestrator } from '../src/core/orchestrator.js';
-import { Fault, type Adapter, type Binding, type Snapshot, type Material, type Record } from '../src/core/types.js';
+import { Fault, type Adapter, type Binding, type Snapshot, type Material, type Record, type ReasoningEffort } from '../src/core/types.js';
 
 const material = async (): Promise<Material> => ({ prompt: '한국어\n```ts\nconst x = 1;\n```', scope: 'ask', files: [], omitted: [] });
 class Fake implements Adapter {
   sends = 0; stops = 0; fail = false;
-  state: Snapshot = { url: 'https://chatgpt.com/', ordinary: true, draft: '', generating: false, messages: [] };
+  state: Snapshot = { url: 'https://chatgpt.com/', ordinary: true, draft: '', generating: false, messages: [],
+    reasoning: { effort: 'medium', raw: 'medium', label: 'Medium' } };
   async snapshot() { return structuredClone(this.state); }
   async prepare(url?: string) {
     if (url && this.state.url !== url) throw new Fault('CONVERSATION_CHANGED', 'switched');
+    return this.snapshot();
+  }
+  async configure(_binding: Binding, effort?: ReasoningEffort) {
+    if (effort) this.state.reasoning = { effort, raw: { low: 'none', medium: 'medium', high: 'high', xhigh: 'max' }[effort],
+      label: { low: 'Instant', medium: 'Medium', high: 'High', xhigh: 'Extra High' }[effort] };
     return this.snapshot();
   }
   async send(text: string) {
@@ -51,6 +57,10 @@ test('simultaneous same ID and separate process store reject BUSY', async () => 
   const first = runner.run({ request_id: 'same' }, async () => { entered(); await gate; return material(); });
   await signal;
   const other = new Orchestrator(new Store(store.dir), adapter);
+  const collecting = await other.retrieve('same');
+  assert.equal(collecting.status, 'prepared');
+  assert.equal(collecting.active, true);
+  assert.equal(collecting.binding, undefined);
   await assert.rejects(other.run({ request_id: 'same' }, material), (e: any) => e.code === 'BUSY');
   release(); await first; assert.equal(adapter.sends, 1);
 });
@@ -238,7 +248,7 @@ test('failed durable write prevents any send', async () => {
 });
 test('wrong mode and previous answer cannot become success', async () => {
   const { runner, adapter } = await setup(); adapter.state.ordinary = false;
-  await assert.rejects(runner.run({ request_id: 'x' }, material), (e: any) => e.code === 'NOT_ORDINARY_CHAT');
+  assert.equal((await runner.run({ request_id: 'x' }, material)).error?.code, 'NOT_ORDINARY_CHAT');
   assert.equal(adapter.sends, 0);
 });
 test('user conversation switch after send is reported, with no resend', async () => {
@@ -388,4 +398,137 @@ test('result lookup reports an active worker without competing for the browser',
   assert.equal(adapter.sends, 1);
   await runner.cancel('active-result');
   assert.equal((await work).status, 'cancelled');
+});
+
+test('prepare bridge failure is durable and replay never touches the browser', async () => {
+  const { runner, store, adapter } = await setup();
+  let prepares = 0;
+  adapter.prepare = async () => {
+    prepares++;
+    assert.equal((await store.read('prepare-offline'))?.status, 'prepared');
+    throw new Fault('BRIDGE_UNAVAILABLE', 'Bridge missing');
+  };
+  const failed = await runner.run({ request_id: 'prepare-offline' }, material);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.error?.code, 'BRIDGE_UNAVAILABLE');
+  assert.equal((await runner.retrieve(failed.id)).status, 'failed');
+  assert.equal((await runner.run({ request_id: failed.id }, material)).status, 'failed');
+  assert.equal(prepares, 1);
+  assert.equal(adapter.sends, 0);
+});
+
+test('cancel acknowledgement loss remains recoverable and never resends', async () => {
+  const { runner, adapter, store } = await setup();
+  adapter.fail = true;
+  await runner.run({ request_id: 'cancel-lost' }, material);
+  adapter.reply(false);
+  const cancel = adapter.cancel.bind(adapter);
+  adapter.cancel = async binding => { await cancel(binding); throw new Fault('BRIDGE_TIMEOUT', 'Ack lost'); };
+  const pending = await runner.cancel('cancel-lost');
+  assert.equal(pending.status, 'unknown_commit');
+  assert.equal((await store.read('cancel-lost'))?.cancel_requested, true);
+  assert.match((pending as Record).error!.message, /not confirmed/);
+  adapter.cancel = cancel;
+  const recovered = await runner.retrieve('cancel-lost');
+  assert.equal(recovered.status, 'cancelled');
+  assert.equal(recovered.answer_complete, false);
+  assert.equal(recovered.answer, '답변');
+  assert.equal(adapter.sends, 1);
+});
+
+test('cancelled follow-up cannot reuse an older completed handle', async () => {
+  const { runner, adapter } = await setup();
+  const first = await runner.run({ request_id: 'initial' }, material);
+  adapter.fail = true;
+  await runner.run({ request_id: 'follow', conversation_handle: first.handle }, material);
+  await runner.cancel('follow');
+  await assert.rejects(runner.run({ request_id: 'after-cancel', conversation_handle: first.handle }, material),
+    (e: any) => e.code === 'INVALID_HANDLE' && e.details.request_id === 'follow' && e.details.conversation_reusable === false);
+  assert.equal(adapter.sends, 2);
+});
+
+test('hidden but completed answer is collected without requiring visibility', async () => {
+  const { runner, adapter } = await setup();
+  adapter.state.visible = false;
+  const r = await runner.run({ request_id: 'hidden-completed' }, material);
+  assert.equal(r.status, 'completed');
+  assert.equal(r.answer_complete, true);
+  assert.equal(r.observation?.visible, false);
+  assert.equal(adapter.sends, 1);
+});
+
+test('lost draft cancellation acknowledgement stays cancellable after a send rejection', async () => {
+  const { runner, adapter } = await setup();
+  adapter.send = async text => { adapter.state.draft = text; throw new Fault('INPUT_MISMATCH', 'No send'); };
+  const failed = await runner.run({ request_id: 'draft-cancel-lost' }, material);
+  assert.equal(failed.status, 'failed');
+  adapter.cancel = async () => { adapter.state.draft = ''; throw new Fault('BRIDGE_TIMEOUT', 'Ack lost'); };
+  assert.equal((await runner.cancel(failed.id)).status, 'unknown_commit');
+  adapter.cancel = async () => { adapter.stops++; };
+  const cancelled = await runner.cancel(failed.id);
+  assert.equal(cancelled.status, 'cancelled');
+  assert.equal((cancelled as Record).send_state, 'not_sent');
+  assert.equal(adapter.stops, 1);
+  assert.equal(adapter.sends, 0);
+});
+
+test('a current local-chatgpt provisional URL waits for its permanent owned conversation', async () => {
+  const { runner, adapter } = await setup();
+  const send = adapter.send.bind(adapter), snapshot = adapter.snapshot.bind(adapter);
+  adapter.send = async text => { await send(text); adapter.state.url = 'https://chatgpt.com/c/local-chatgpt%3Atemporary'; };
+  let polls = 0;
+  adapter.snapshot = async () => {
+    if (adapter.sends && ++polls >= 5) adapter.state.url = 'https://chatgpt.com/c/permanent';
+    return snapshot();
+  };
+  const r = await runner.run({ request_id: 'temporary-url' }, material);
+  assert.equal(r.status, 'completed');
+  assert.ok(polls >= 5);
+  assert.equal(r.binding?.url, 'https://chatgpt.com/c/permanent');
+  assert.equal(adapter.sends, 1);
+});
+
+test('requested reasoning is verified before send and saved with the answer', async () => {
+  const { runner, adapter, store } = await setup();
+  const r = await runner.run({ request_id: 'reasoning-high', reasoning_effort: 'xhigh' }, material);
+  assert.equal(r.status, 'completed');
+  assert.equal(r.requested_reasoning_effort, 'xhigh');
+  assert.deepEqual(r.applied_reasoning, { effort: 'xhigh', raw: 'max', label: 'Extra High' });
+  assert.deepEqual(r.binding?.reasoning, r.applied_reasoning);
+  assert.deepEqual((await store.read(r.id))?.applied_reasoning, r.applied_reasoning);
+  assert.equal(adapter.sends, 1);
+});
+
+test('omitted reasoning preserves the observed safe setting, including Instant', async () => {
+  const { runner, adapter } = await setup();
+  adapter.state.reasoning = { effort: 'low', raw: 'none', label: 'Instant' };
+  const r = await runner.run({ request_id: 'instant' }, material);
+  assert.equal(r.status, 'completed');
+  assert.equal(r.requested_reasoning_effort, undefined);
+  assert.deepEqual(r.applied_reasoning, adapter.state.reasoning);
+  assert.equal(adapter.sends, 1);
+});
+
+test('reasoning mismatch, Pro, and unknown values fail before send', async () => {
+  for (const [raw, effort, code] of [
+    ['medium', 'medium', 'REASONING_MISMATCH'],
+    ['pro', undefined, 'PRO_FORBIDDEN'],
+    ['mystery', undefined, 'REASONING_UNAVAILABLE'],
+  ] as const) {
+    const { runner, adapter } = await setup();
+    adapter.configure = async () => ({ ...adapter.state, reasoning: { raw, effort, label: raw } });
+    const r = await runner.run({ request_id: raw, reasoning_effort: 'high' }, material);
+    assert.equal(r.status, 'failed');
+    assert.equal(r.error?.code, code);
+    assert.equal(r.send_state, 'not_sent');
+    assert.equal(adapter.sends, 0);
+  }
+});
+
+test('same request ID with a different reasoning effort conflicts without sending again', async () => {
+  const { runner, adapter } = await setup();
+  await runner.run({ request_id: 'effort-replay', reasoning_effort: 'low' }, material);
+  await assert.rejects(runner.run({ request_id: 'effort-replay', reasoning_effort: 'high' }, material),
+    (e: any) => e.code === 'REQUEST_ID_CONFLICT');
+  assert.equal(adapter.sends, 1);
 });

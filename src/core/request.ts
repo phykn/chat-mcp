@@ -1,6 +1,18 @@
-import type { Record } from './types.js';
+import type { ReasoningSetting, Record } from './types.js';
 
-const draftErrors = ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE', 'CONVERSATION_CHANGED', 'COMMAND_EXPIRED'];
+const draftErrors = ['INPUT_MISMATCH', 'INPUT_FAILED', 'SEND_UNAVAILABLE', 'CONVERSATION_CHANGED', 'COMMAND_EXPIRED',
+  'REASONING_UNAVAILABLE', 'REASONING_MISMATCH', 'PRO_FORBIDDEN'];
+
+const effortByRaw = { none: 'low', medium: 'medium', high: 'high', max: 'xhigh' } as const;
+export function verifiedReasoning(setting?: ReasoningSetting) {
+  if (!setting) return undefined;
+  const effort = effortByRaw[setting.raw as keyof typeof effortByRaw];
+  return effort && setting.effort === effort ? effort : undefined;
+}
+
+export function isTemporaryChat(path: string) {
+  return /^\/c\/(?:WEB:|local-chatgpt(?::|%3a))/i.test(path);
+}
 
 export function isConnectionError(code: string) {
   return ['BRIDGE_TIMEOUT', 'BRIDGE_UNAVAILABLE', 'EXTENSION_DISCONNECTED', 'CONTENT_UNAVAILABLE', 'COMMAND_EXPIRED'].includes(code);
