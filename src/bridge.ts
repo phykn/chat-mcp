@@ -70,10 +70,16 @@ server.on('upgrade', (req, socket, head) => {
 });
 sockets.on('connection', ws => {
   let authenticated = false;
+  let lastMessage = Date.now();
   const authTimer = setTimeout(() => ws.close(), 5_000);
+  const heartbeat = setInterval(() => {
+    if (Date.now() - lastMessage >= 60_000) ws.terminate();
+  }, 20_000);
+  heartbeat.unref();
   ws.on('message', async bytes => {
     try {
       const msg = JSON.parse(bytes.toString());
+      lastMessage = Date.now();
       if (!authenticated) {
         if (!valid(msg.token) || (extension && extension.readyState === WebSocket.OPEN)) { ws.close(); return; }
         authenticated = true; clearTimeout(authTimer); extension = ws;
@@ -86,6 +92,7 @@ sockets.on('connection', ws => {
   });
   ws.on('close', () => {
     clearTimeout(authTimer);
+    clearInterval(heartbeat);
     if (extension === ws) {
       extension = undefined;
       activeRevision = undefined;

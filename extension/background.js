@@ -27,16 +27,27 @@ function connect() {
   socket = ws;
   const current = () => socket === ws && tabId === target;
   const reply = value => { if (current() && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(value)); };
-  let heartbeat;
+  let lastReply = Date.now();
+  const heartbeat = setInterval(() => {
+    if (!current()) { clearInterval(heartbeat); return; }
+    if (Date.now() - lastReply >= 60_000) {
+      socket = undefined; connected = false;
+      clearInterval(heartbeat);
+      ws.close();
+      reconnect = setTimeout(connect, 3_000);
+      return;
+    }
+    reply({ ping: true });
+  }, 20_000);
   ws.onopen = () => {
     if (!current()) { ws.close(); return; }
     reply({ token, revision });
-    heartbeat = setInterval(() => reply({ ping: true }), 20_000);
   };
   ws.onmessage = async event => {
     if (!current()) return;
     let msg;
     try { msg = JSON.parse(event.data); } catch { ws.close(); return; }
+    lastReply = Date.now();
     if (msg.revision && msg.revision !== revision) { reloadPending = true; applyUpdate(); }
     if (msg.ready) { connected = true; return; }
     if (!msg.id) return;
@@ -209,6 +220,22 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
   return true;
 });
 chrome.tabs.onRemoved.addListener((id, info) => { if (id === tabId) void disconnect(!info.isWindowClosing); });
+chrome.tabs.onReplaced.addListener((added, removed) => {
+  if (removed !== tabId) return;
+  const ws = socket;
+  tabId = added; socket = undefined; connected = false;
+  clearTimeout(reconnect); ws?.close();
+  return (async () => {
+    const tab = await chrome.tabs.get(added);
+    if (tabId !== added) return;
+    if (isChat(tab)) await attach(tab);
+    else await disconnect();
+  })().catch(async e => {
+    if (tabId !== added) return;
+    await disconnect();
+    connectionError = String(e);
+  });
+});
 chrome.tabs.onUpdated.addListener((id, change, tab) => {
   if (id !== tabId) return;
   if (change.url || change.status === 'complete') {

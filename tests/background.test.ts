@@ -11,6 +11,8 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
   let contentReply: ((msg: any) => any) | undefined;
   const loaded = new Set<number>();
   const clock = { now: Date.now() };
+  const intervals = new Map<number, () => void>();
+  let intervalId = 0;
   let pageSnapshot: any;
   let waitForTab: (() => Promise<void>) | undefined;
   class Socket {
@@ -44,19 +46,52 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
       sendMessage: async (id: number, msg: any) => { if (!loaded.has(id)) throw Error('No receiver'); sent.push(id); return contentReply?.(msg) || { value: pageSnapshot || { url: pages.get(id)!.url, draft: '', generating: false } }; },
       reload: async (id: number) => { pageReloads.push(id); onReload?.(); },
       update: async (id: number, change: any) => { updated.push({ id, ...change }); updates.push({ kind: 'tab', id, ...change }); return pages.get(id); },
-      onRemoved: event('removed'), onUpdated: event('updated'),
+      onRemoved: event('removed'), onUpdated: event('updated'), onReplaced: event('replaced'),
     },
   };
   const source = (await readFile('extension/background.js', 'utf8')).replace("import { token, revision } from './config.js';", "const token = 'fixture', revision = 'fixture';");
   runInNewContext(source, { chrome, WebSocket: Socket, Date: class extends Date { static now() { return clock.now; } },
-    setInterval: () => 1, clearInterval() {}, setTimeout: (fn: () => void, ms: number) => { if (ms === 200) { clock.now += ms; queueMicrotask(fn); } return 1; }, clearTimeout() {} });
+    setInterval: (fn: () => void) => { intervals.set(++intervalId, fn); return intervalId; },
+    clearInterval: (id: number) => intervals.delete(id),
+    setTimeout: (fn: () => void, ms: number) => { if (ms === 200) { clock.now += ms; queueMicrotask(fn); } return 1; }, clearTimeout() {} });
   const call = (command: string, tabId?: number) => new Promise<any>(resolve => listeners.message({ command, tabId }, {}, resolve));
   await call('status');
   return { call, listeners, pages, sent, injected, updated, updates, sockets, local, reloads, clock, windows, pageReloads,
+    tick: () => { for (const fn of [...intervals.values()]) fn(); },
     setReply: (fn: (msg: any) => any) => { contentReply = fn; }, onReload: (fn: () => void) => { onReload = fn; },
     onFocus: (fn: () => void) => { onFocus = fn; },
     setSnapshot: (s: any) => { pageSnapshot = s; }, blockGet: (wait?: () => Promise<void>) => { waitForTab = wait; } };
 }
+
+test('an unresponsive open bridge connection is replaced without replaying browser commands', async () => {
+  const f = await fixture(); await f.call('connect', 1);
+  const ws = f.sockets[0]; ws.open(); await ws.signal({ ready: true });
+  f.clock.now += 20_000; f.tick();
+  assert.equal(ws.replies.at(-1).ping, true);
+  await ws.signal({ pong: true });
+  f.clock.now += 40_000; f.tick();
+  assert.equal(ws.readyState, 1, 'a recently responsive connection is preserved');
+  f.clock.now += 20_000; f.tick();
+  assert.equal(ws.readyState, 3, 'missing bridge replies must retire the stale socket');
+  assert.equal((await f.call('status')).connected, false);
+  assert.equal(f.sockets.length, 2);
+  f.sockets[1].open(); await f.sockets[1].signal({ ready: true });
+  assert.equal((await f.call('status')).connected, true);
+  assert.equal(f.sent.length, 1, 'only the initial connect snapshot ran');
+});
+
+test('a connection stuck before opening is retired, and explicit disconnect cancels its watchdog', async () => {
+  const f = await fixture(); await f.call('connect', 1);
+  f.clock.now += 60_000; f.tick();
+  assert.equal(f.sockets[0].readyState, 3);
+  await f.call('status');
+  assert.equal(f.sockets.length, 2);
+  await f.call('disconnect');
+  f.clock.now += 60_000; f.tick();
+  await f.listeners.alarm({ name: 'reconnect' });
+  assert.equal(f.sockets.length, 2);
+  assert.equal(f.local.target.enabled, false);
+});
 
 test('sending from another task restores the hidden Chrome window before input', async () => {
   const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
@@ -301,6 +336,52 @@ test('restart recovers the saved conversation, while explicit disconnect stays d
   await next.listeners.installed({ reason: 'update' });
   assert.equal((await next.call('status')).tabId, undefined);
   assert.equal(next.sockets.length, 0);
+});
+
+test('other tabs and same-tab ChatGPT navigation preserve the selected connection', async () => {
+  const f = await fixture(); await f.call('connect', 1);
+  f.sockets[0].open(); await f.sockets[0].signal({ ready: true });
+  f.listeners.updated(2, { status: 'complete' }, { id: 2, url: 'https://chatgpt.com/' });
+  f.listeners.removed(2, { isWindowClosing: false });
+  f.listeners.replaced(3, 2);
+  f.listeners.updated(1, { url: 'https://chatgpt.com/c/new' }, { id: 1, url: 'https://chatgpt.com/c/new' });
+  const status = await f.call('status');
+  assert.equal(status.tabId, 1); assert.equal(status.connected, true);
+  assert.equal(f.sockets.length, 1);
+  assert.equal(f.local.target.url, 'https://chatgpt.com/c/new');
+});
+
+test('Chrome tab replacement reconnects the replacement and ignores removal of the old ID', async () => {
+  const f = await fixture({}, {}, [{ id: 1, url: 'https://chatgpt.com/c/old' }, { id: 2, url: 'https://chatgpt.com/c/old' }]);
+  await f.call('connect', 1); f.sockets[0].open();
+  f.listeners.replaced(2, 1);
+  f.listeners.removed(1, { isWindowClosing: false });
+  await f.call('status');
+  assert.equal((await f.call('status')).tabId, 2);
+  assert.equal(f.sockets[0].readyState, 3);
+  f.sockets[1].open(); await f.sockets[1].signal({ ready: true });
+  assert.equal((await f.call('status')).connected, true);
+  assert.equal(f.local.target.enabled, true);
+});
+
+test('a failed tab replacement releases its selection so another tab can connect', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  await f.listeners.replaced(999, 1);
+  assert.equal((await f.call('status')).tabId, undefined);
+  assert.equal(f.sockets[0].readyState, 3);
+  assert.equal((await f.call('connect', 1)).tabId, 1);
+});
+
+test('a late tab replacement failure does not disconnect a newly selected tab', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  let reject!: (error: Error) => void;
+  f.blockGet(() => new Promise<void>((_, fail) => { reject = fail; }));
+  const replaced = f.listeners.replaced(999, 1);
+  await f.call('disconnect'); f.blockGet();
+  await f.call('connect', 1);
+  reject(Error('Old tab disappeared')); await replaced;
+  assert.equal((await f.call('status')).tabId, 1);
+  assert.equal(f.local.target.enabled, true);
 });
 
 test('ambiguous restored tabs are not selected and closing Chrome preserves automatic reconnect', async () => {

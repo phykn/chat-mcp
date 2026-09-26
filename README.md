@@ -43,6 +43,8 @@ You can also ask for a structure or readability review of existing code. `review
 
 Keep the connected ChatGPT tab open and your PC awake during requests. Requests activate that tab and restore its Chrome window if minimized. The bridge starts when needed; Chrome reconnects automatically after restarting. If you close the tab, click **Open ChatGPT** in the extension popup.
 
+Opening another tab does not change the connection. Chrome's internal replacement of the connected tab is followed automatically. If either side of the local connection stops responding, it is retired after 60 seconds without replies so Chrome can reconnect; pending commands are not replayed.
+
 ## Reasoning level
 
 Both `chatgpt_ask` and `review_with_chatgpt` accept `reasoning_effort`: `low`, `medium`, `high`, or `xhigh`. Choose by task difficulty: low for bounded simple checks, medium for ordinary analysis, high for substantial reviews or debugging, and xhigh for difficult architecture or ambiguous failures. On the supported ChatGPT UI, low maps to **Instant** (`none`) and xhigh to **Extra High** (`max`). Omission keeps the current verified non-Pro setting. The selected setting remains in the shared tab after the request.

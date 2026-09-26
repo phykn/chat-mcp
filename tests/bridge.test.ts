@@ -5,6 +5,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
+import { pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
 import { createServer } from 'node:net';
 import { ensureBridge } from '../dist/core/bridge-process.js';
@@ -63,6 +64,64 @@ test('cold-start readiness waits for the extension without dispatching or retryi
     assert.equal((await status()).connected, true);
     assert.equal(commands, 0);
   } finally { ws?.close(); process.kill(pid); }
+});
+
+test('a silent extension is evicted so a replacement can connect without replaying a pending command', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chat-mcp-heartbeat-'));
+  const token = 'e'.repeat(64);
+  await writeFile(join(dir, 'bridge-token'), token);
+  // Advance only the watchdog clock; command timers retain their real deadlines.
+  const clock = join(dir, 'clock.mjs');
+  await writeFile(clock, `const now = Date.now; let offset = 0;
+Date.now = () => now() + offset;
+const interval = globalThis.setInterval;
+globalThis.setInterval = (fn, ms, ...args) => interval(fn, ms === 20000 ? 20 : ms, ...args);
+process.on('message', ms => { offset += ms; process.send('advanced'); });`);
+  const child = spawn(process.execPath, ['--import', pathToFileURL(clock).href, 'dist/bridge.js'], {
+    env: { ...process.env, CHAT_MCP_DATA_DIR: dir, CHAT_MCP_BRIDGE_PORT: '0' },
+    stdio: ['ignore', 'ignore', 'pipe', 'ipc'], windowsHide: true,
+  });
+  const clients: WebSocket[] = [];
+  try {
+    const port = await new Promise<string>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', code => reject(Error(`Bridge exited during startup: ${code}`)));
+      child.stderr!.on('data', chunk => {
+        const match = chunk.toString().match(/127\.0\.0\.1:(\d+)/); if (match) resolve(match[1]);
+      });
+    });
+    const connect = async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/extension`, { origin: 'chrome-extension://' + 'e'.repeat(32) });
+      clients.push(ws); await once(ws, 'open');
+      ws.send(JSON.stringify({ token }));
+      assert.equal(JSON.parse((await once(ws, 'message'))[0].toString()).ready, true);
+      return ws;
+    };
+    const advance = async (ms: number) => { const ack = once(child, 'message'); child.send(ms); await ack; };
+    const ws = await connect();
+    await advance(40_000);
+    ws.send(JSON.stringify({ ping: true }));
+    assert.equal(JSON.parse((await once(ws, 'message'))[0].toString()).pong, true);
+    await advance(40_000);
+    ws.send(JSON.stringify({ ping: true }));
+    assert.equal(JSON.parse((await once(ws, 'message'))[0].toString()).pong, true, 'live connections survive');
+    const observed = once(ws, 'message');
+    const response = fetch(`http://127.0.0.1:${port}/rpc`, { method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: 'snapshot' }) });
+    assert.equal(JSON.parse((await observed)[0].toString()).command, 'snapshot');
+    const closed = once(ws, 'close'); await advance(60_000); await closed;
+    assert.equal((await (await response).json() as any).error.code, 'EXTENSION_DISCONNECTED');
+    const replacement = await connect();
+    let replayed = false; replacement.on('message', () => { replayed = true; });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    assert.equal(replayed, false);
+  } finally {
+    for (const ws of clients) ws.terminate();
+    if (child.exitCode === null && child.signalCode === null) {
+      const exited = once(child, 'exit'); child.kill(); await exited;
+    }
+  }
 });
 
 test('a slow Send can finish after 15 seconds while a shorter request deadline still wins', async () => {
