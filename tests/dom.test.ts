@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chromium } from 'playwright';
 import { readFile } from 'node:fs/promises';
-import { hash } from '../src/core/store.js';
+import { hash } from '../src/core/hash.js';
 import { normalizeDraft } from '../src/core/text.js';
 
 const reasoning = { effort: 'medium', raw: 'medium', label: 'Medium' };

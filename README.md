@@ -100,6 +100,10 @@ For marketplace registration, use `https://github.com/phykn/chat-mcp`, ref `main
 
 For unattended setup, use `npm run setup -- --non-interactive`. It skips windows and prompts. Run `npm run doctor` to check readiness: exit code `0` means ready; `1` means action is needed.
 
+## Source layout
+
+`src/core` owns request state, persistence, hashing, and shared reasoning definitions. `src/browser` contains page DOM and reasoning controls; `src/adapters/extension.ts` connects the request runner to the local bridge. `extension` owns Chrome tab and connection lifecycle, while `src/context` collects review inputs. The MCP entrypoint and bridge remain `src/main.ts` and `src/bridge.ts`.
+
 ## Usage notice
 
 For individual development workflows, not bulk collection or multi-user hosting. This project is not affiliated with OpenAI.

@@ -1,11 +1,5 @@
 import { Fault, type ReasoningEffort, type ReasoningSetting } from '../core/types.js';
-
-const levels = [
-  { effort: 'low', raw: 'none', label: 'Instant' },
-  { effort: 'medium', raw: 'medium', label: 'Medium' },
-  { effort: 'high', raw: 'high', label: 'High' },
-  { effort: 'xhigh', raw: 'max', label: 'Extra High' },
-] as const;
+import { reasoningLevels as levels } from '../core/reasoning.js';
 
 export function reasoningButton() {
   const buttons = [...document.querySelectorAll<HTMLButtonElement>('button[data-selected-reasoning-effort][data-composer-navigation-target="reasoning"]')];

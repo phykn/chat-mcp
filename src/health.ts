@@ -3,7 +3,7 @@ import { dataDir } from './config.js';
 import { Fault, type Adapter } from './core/types.js';
 import type { Store } from './core/store.js';
 import { isUnresolved } from './core/request.js';
-import { verifiedReasoning } from './core/request.js';
+import { verifiedReasoning } from './core/reasoning.js';
 
 export async function health(store: Store, adapter: Adapter) {
   const records = (await store.records()).sort((a, b) => b.updated - a.updated);

@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { Store, hash } from './store.js';
+import { Store } from './store.js';
+import { hash } from './hash.js';
 import { Fault, type Adapter, type Record, type Material, type Snapshot, type ReasoningEffort } from './types.js';
 import { normalizeDraft } from './text.js';
-import { isTerminal, isPending, isCancellable, isSendRejected, isConnectionError, isTemporaryChat, verifiedReasoning } from './request.js';
+import { isTerminal, isPending, isCancellable, isSendRejected, isConnectionError, isTemporaryChat } from './request.js';
+import { verifiedReasoning } from './reasoning.js';
 
 const recovery = 'Call chatgpt_result with this request_id to recover the existing answer without resending, or chatgpt_cancel to stop it.';
 

@@ -1,6 +1,6 @@
-import { browserSnapshot, stopButton, composer, sendButton } from '../src/adapters/dom.js';
+import { browserSnapshot, stopButton, composer, sendButton } from '../src/browser/dom.js';
 import { normalizeDraft, maxInputLines } from '../src/core/text.js';
-import { checkReasoning, configureReasoning } from '../src/adapters/reasoning.js';
+import { checkReasoning, configureReasoning } from '../src/browser/reasoning.js';
 declare const chrome: any;
 let busy = false;
 const fault = (code: string, message: string) => Object.assign(new Error(message), { code });

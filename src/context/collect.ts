@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { readFile, realpath, lstat } from 'node:fs/promises';
-import { resolve, relative, isAbsolute } from 'node:path';
+import { resolve, relative, isAbsolute, sep } from 'node:path';
 import { Fault, type Material } from '../core/types.js';
-import { hash } from '../core/store.js';
+import { hash } from '../core/hash.js';
 import { maxBytes } from '../config.js';
 import { maxInputLines } from '../core/text.js';
 
@@ -43,7 +43,8 @@ async function disk(root: string, path: string) {
   try {
     if ((await lstat(full)).isSymbolicLink()) return undefined;
     const actual = await realpath(full), rel = relative(root, actual);
-    if (rel.startsWith('..') || isAbsolute(rel)) throw new Fault('PATH_ESCAPE', `Path escapes repository: ${path}`);
+    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) throw new Fault('PATH_ESCAPE', `Path escapes repository: ${path}`);
+    if (exclusion(rel.split(sep).join('/'))) return undefined;
     const stat = await lstat(actual);
     if (!stat.isFile()) return undefined;
     if (stat.size > maxBytes) throw new Fault('CONTEXT_TOO_LARGE', `File exceeds ${maxBytes} bytes: ${path}`,

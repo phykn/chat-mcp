@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { access, cp, mkdir, readFile, readdir, writeFile, rename, open } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, readdir, writeFile, rename, open, unlink } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -65,11 +65,16 @@ export async function configure({ root, codexHome, dataDir, home = homedir(), no
     throw Error('The standalone MCP config changed during setup. Run setup again.');
   const next = removeStandalone(latest, parse);
   if (next === latest) return { ...plugin, extensionDir };
-  const tmp = configPath + `.chat-mcp-${process.pid}.tmp`;
+  const tmp = configPath + `.chat-mcp-${process.pid}-${randomBytes(8).toString('hex')}.tmp`;
   const file = await open(tmp, 'wx', 0o600);
-  try { await file.writeFile(next); await file.sync(); } finally { await file.close(); }
-  if (await readFile(configPath, 'utf8') !== latest) throw Error('Codex config changed during setup. Run setup again.');
-  await rename(tmp, configPath);
+  try {
+    try { await file.writeFile(next); await file.sync(); }
+    finally { await file.close(); }
+    if (await readFile(configPath, 'utf8') !== latest) throw Error('Codex config changed during setup. Run setup again.');
+    await rename(tmp, configPath);
+  } finally {
+    try { await unlink(tmp); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  }
   return { ...plugin, extensionDir };
 }
 

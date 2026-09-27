@@ -1,15 +1,10 @@
 import { mkdir, open, readFile, rename, unlink, readdir, link } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Fault, type Record } from './types.js';
 import { processIdentity } from './process.js';
-
-export function hash(value: unknown): string {
-  const stable = (v: any): any => Array.isArray(v) ? v.map(stable) :
-    v && typeof v === 'object' ? Object.fromEntries(Object.keys(v).sort().map(k => [k, stable(v[k])])) : v;
-  return createHash('sha256').update(JSON.stringify(stable(value))).digest('hex');
-}
+import { hash } from './hash.js';
 
 export class Store {
   constructor(public dir: string) {}

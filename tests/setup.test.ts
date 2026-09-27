@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile, copyFile, cp, unlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, copyFile, cp, unlink, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
@@ -127,6 +127,24 @@ test('plugin setup preserves unrelated catalog entries and refuses a conflicting
   await writeFile(catalog, conflicting);
   await assert.rejects(configure(options), /different chat-mcp plugin/);
   assert.equal(await readFile(catalog, 'utf8'), conflicting);
+});
+
+test('setup tolerates an abandoned config temp file and preserves edits made during installation', async () => {
+  const options = await fixture(), file = join(options.codexHome, 'config.toml');
+  const original = `model = "example"\n\n[mcp_servers.chat-mcp]\ncommand = "node"\nargs = [${JSON.stringify(join(options.root, 'dist', 'main.js'))}]\nenabled = true\n`;
+  await writeFile(file, original);
+  const abandoned = `config.toml.chat-mcp-${process.pid}.tmp`;
+  await writeFile(join(options.codexHome, abandoned), 'previous attempt');
+  await configure({ ...options, install: async selector => {
+    await writeFile(file, '# concurrent change\n' + original);
+    await options.install(selector);
+  } });
+  const saved = await readFile(file, 'utf8');
+  assert.ok(saved.startsWith('# concurrent change\n'));
+  assert.equal(parse(saved).model, 'example');
+  assert.equal(parse(saved).mcp_servers, undefined);
+  assert.equal(await readFile(join(options.codexHome, abandoned), 'utf8'), 'previous attempt');
+  assert.deepEqual((await readdir(options.codexHome)).filter(name => name.endsWith('.tmp')), [abandoned]);
 });
 
 test('doctor checks setup and activation before starting MCP', async () => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rename, rm, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, rename, rm, mkdir, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -93,6 +93,37 @@ test('ask context reports omissions and missing files explicitly', async () => {
   assert.match(m.prompt, /1: def add/); assert.equal(m.omitted[0].path, '.env');
   assert.equal(m.omitted[1].path, 'extension/config.js');
   await assert.rejects(collectAsk({ prompt: 'read', repo_path: root, context_paths: ['missing'] }), (e: any) => e.code === 'FILE_NOT_FOUND');
+});
+
+test('dot-prefixed filenames inside the repository are not parent traversal', async () => {
+  const root = await repo();
+  await writeFile(join(root, '..notes.txt'), 'local notes\n');
+  const ask = await collectAsk({ prompt: 'read', repo_path: root, context_paths: ['..notes.txt'] });
+  assert.deepEqual(ask.files, ['..notes.txt']);
+  assert.match(ask.prompt, /1: local notes/);
+  const review = await collectReview({ repo_path: root, scope: 'working_tree', paths: ['..notes.txt'] });
+  assert.deepEqual(review.files, ['..notes.txt']);
+});
+
+test('directory aliases cannot include excluded repository files or escape the root', async () => {
+  const root = await repo();
+  await mkdir(join(root, '.chat-mcp'));
+  await writeFile(join(root, '.chat-mcp', 'private.txt'), 'PRIVATE_CONTEXT');
+  await symlink(join(root, '.chat-mcp'), join(root, 'alias'), 'junction');
+  const ask = await collectAsk({ prompt: 'read', repo_path: root, context_paths: ['alias/private.txt'] });
+  assert.deepEqual(ask.files, []);
+  assert.equal(ask.omitted[0].path, 'alias/private.txt');
+  assert.doesNotMatch(ask.prompt, /PRIVATE_CONTEXT/);
+  await mkdir(join(root, 'source'));
+  await writeFile(join(root, 'source', 'public.txt'), 'PUBLIC_CONTEXT');
+  await symlink(join(root, 'source'), join(root, 'public-alias'), 'junction');
+  const publicFile = await collectAsk({ prompt: 'read', repo_path: root, context_paths: ['public-alias/public.txt'] });
+  assert.match(publicFile.prompt, /PUBLIC_CONTEXT/);
+  const outside = await mkdtemp(join(tmpdir(), 'chat-mcp-outside-'));
+  await writeFile(join(outside, 'private.txt'), 'OUTSIDE_CONTEXT');
+  await symlink(outside, join(root, 'outside'), 'junction');
+  await assert.rejects(collectAsk({ prompt: 'read', repo_path: root, context_paths: ['outside/private.txt'] }),
+    (e: any) => e.code === 'PATH_ESCAPE');
 });
 
 test('a clean repository can be reviewed without inventing a diff', async () => {
