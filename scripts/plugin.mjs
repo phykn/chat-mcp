@@ -19,7 +19,7 @@ export async function preparePlugin({ root, home, server }) {
 
   const manifest = JSON.parse(await readFile(join(root, '.codex-plugin', 'plugin.json'), 'utf8'));
   if (manifest.name !== 'chat-mcp') throw Error('Invalid Chat MCP plugin name.');
-  manifest.version = manifest.version.split('+')[0] + '+codex.' + Date.now();
+  manifest.version = manifest.version.split('+')[0] + '+codex.' + new Date().toISOString().replace(/\D/g, '');
   // Only ship the runtime and instructions. Requests and credentials stay outside the plugin.
   await access(join(root, 'dist', 'plugin', 'main.js'));
   await access(join(root, 'dist', 'plugin', 'bridge.js'));

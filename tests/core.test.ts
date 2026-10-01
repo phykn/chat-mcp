@@ -41,7 +41,7 @@ async function setup() {
   assert.ok(await processIdentity(process.pid), 'Test worker process identity must be available');
   const store = new Store(await mkdtemp(join(tmpdir(), 'chat-mcp-core-')));
   const adapter = new Fake();
-  const runner = new Orchestrator(store, adapter, 2_000, 5, 10);
+  const runner = new Orchestrator(store, adapter, 10_000, 5, 10);
   return { store, adapter, runner };
 }
 test('completed request replay avoids recollection and duplicate sends', async () => {

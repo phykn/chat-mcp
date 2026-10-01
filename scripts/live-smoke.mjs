@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, mkdtemp, rmdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -10,13 +10,14 @@ import { ensureBridge } from '../dist/core/bridge-process.js';
 
 if (!process.argv.includes('--live')) throw Error('Use --live: this test sends prompts to the connected ChatGPT account.');
 const server = resolve(process.env.CHAT_MCP_TEST_SERVER || 'dist/main.js');
+const cwd = await mkdtemp(join(tmpdir(), 'chat-mcp-other-project-'));
 const store = new Store(join(process.env.CHAT_MCP_DATA_DIR || join(homedir(), '.chat-mcp'), 'requests'));
 const prefix = `live-smoke-${Date.now()}`;
 const checks = [];
 let client, owned;
 async function connect() {
   client = new Client({ name: 'chat-mcp-live-smoke', version: '1' });
-  const transport = new StdioClientTransport({ command: process.execPath, args: [server], stderr: 'pipe' });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [server], cwd, stderr: 'pipe' });
   transport.stderr?.on('data', () => {});
   await client.connect(transport);
 }
@@ -28,7 +29,7 @@ async function call(name, args) {
 }
 async function ask(label, extra = {}) {
   const token = `CHAT_MCP_OK_${label.toUpperCase()}`;
-  const args = { request_id: `${prefix}-${label}`, prompt: `Connection test. Reply with exactly ${token} and nothing else.`, ...extra };
+  const args = { request_id: `${prefix}-${label}`, prompt: `Connection test. Reply with exactly ${token} and nothing else.`, reasoning_effort: 'low', ...extra };
   owned = args.request_id;
   const start = Date.now();
   const r = await call('chatgpt_ask', args);
@@ -64,7 +65,7 @@ try {
 
   if (process.argv.includes('--interrupt')) {
     owned = `${prefix}-restart`;
-    const pending = call('chatgpt_ask', { request_id: owned, prompt: 'Reply with exactly CHAT_MCP_OK_RESTART and nothing else.' }).catch(() => undefined);
+    const pending = call('chatgpt_ask', { request_id: owned, prompt: 'Reply with exactly CHAT_MCP_OK_RESTART and nothing else.', reasoning_effort: 'low' }).catch(() => undefined);
     const deadline = Date.now() + 60_000;
     let record;
     do {
@@ -94,7 +95,7 @@ try {
   }
   if (process.argv.includes('--bridge-restart')) {
     owned = `${prefix}-bridge`;
-    const pending = call('chatgpt_ask', { request_id: owned, prompt: 'Reply with exactly CHAT_MCP_OK_BRIDGE and nothing else.' });
+    const pending = call('chatgpt_ask', { request_id: owned, prompt: 'Reply with exactly CHAT_MCP_OK_BRIDGE and nothing else.', reasoning_effort: 'low' });
     const deadline = Date.now() + 60_000;
     let record;
     do {
@@ -127,6 +128,7 @@ try {
     catch (e) { console.error(`Retained request ${owned}: ${String(e)}`); }
   }
   await client?.close();
+  await rmdir(cwd);
   await mkdir('artifacts', { recursive: true });
   const path = join('artifacts', prefix + '.json');
   await writeFile(path, JSON.stringify({ server, date: new Date().toISOString(), checks }, null, 2) + '\n');

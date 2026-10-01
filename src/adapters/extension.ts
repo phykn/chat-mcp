@@ -26,8 +26,25 @@ export class ExtensionAdapter implements Adapter {
     if (!response.ok) throw new Fault('BRIDGE_ERROR', `Bridge HTTP ${response.status}`);
     return result.value;
   }
-  snapshot(binding?: Binding, deadline?: number): Promise<Snapshot> {
-    return this.rpc({ command: 'snapshot', ...(binding ? { args: { binding } } : {}) }, deadline);
+  private async retry<T extends Extract<Command, { command: 'snapshot' | 'configure' }>>(command: T, deadline = Date.now() + 30_000): Promise<CommandResults[T['command']]> {
+    deadline = Math.min(deadline, Date.now() + 30_000);
+    let error: Fault | undefined;
+    while (Date.now() < deadline) {
+      try { return await this.rpc(command, deadline); }
+      catch (e) {
+        if (!(e instanceof Fault) || e.code === 'COMMAND_EXPIRED' ||
+            (!isConnectionError(e.code) && !(error && command.command === 'configure' && e.code === 'BUSY'))) throw e;
+        error = e;
+        // Restore a paused renderer before its next read; the extension guards bound URLs.
+        if (command.command === 'snapshot')
+          command = { ...command, args: { ...command.args, activate: true } };
+      }
+      if (Date.now() < deadline) await sleep(Math.min(300, deadline - Date.now()));
+    }
+    throw error || new Fault('COMMAND_EXPIRED', 'Request deadline expired before browser dispatch.');
+  }
+  snapshot(binding?: Binding, deadline?: number, activate = false): Promise<Snapshot> {
+    return this.retry({ command: 'snapshot', ...(binding || activate ? { args: { binding, ...(activate ? { activate } : {}) } } : {}) }, deadline);
   }
   private async ready(url?: string, deadline = Date.now() + 30_000) {
     deadline = Math.min(deadline, Date.now() + 30_000);
@@ -35,7 +52,7 @@ export class ExtensionAdapter implements Adapter {
     let error: unknown;
     do {
       try {
-        s = await this.snapshot(undefined, deadline); error = undefined;
+        s = await this.snapshot(undefined, deadline, true); error = undefined;
         if (s.ordinary && (!url || (s.url === url && !s.messages.length))) return s;
       } catch (e) {
         if (!(e instanceof Fault) || !isConnectionError(e.code)) throw e;
@@ -65,7 +82,7 @@ export class ExtensionAdapter implements Adapter {
     return s;
   }
   configure(binding: Binding, effort?: ReasoningEffort, deadline?: number): Promise<Snapshot> {
-    return this.rpc({ command: 'configure', args: { binding, reasoning_effort: effort } }, deadline);
+    return this.retry({ command: 'configure', args: { binding, reasoning_effort: effort } }, deadline);
   }
   async send(text: string, binding: Binding, deadline?: number) { await this.rpc({ command: 'send', args: { text, binding } }, deadline); }
   async cancel(binding: Binding) { await this.rpc({ command: 'cancel', args: { binding } }); }

@@ -67,6 +67,14 @@ test('fresh plugin setup registers one catalog entry and keeps credentials out o
   assert.equal(JSON.parse(await readFile(plugin.catalog, 'utf8')).plugins.length, 1);
 });
 
+test('generated plugin versions sort after the existing calendar-stamped cache', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.UTC(2026, 8, 27, 13, 10, 6) });
+  const options = await fixture(), plugin = await configure(options);
+  const manifest = JSON.parse(await readFile(join(plugin.dir, '.codex-plugin', 'plugin.json'), 'utf8'));
+  assert.ok(manifest.version > '0.1.0+codex.20260927131005', manifest.version);
+  assert.equal(manifest.version, '0.1.0+codex.20260927131006000');
+});
+
 test('installed plugin starts from another folder without source files or node_modules', async () => {
   const options = await fixture(), plugin = await configure(options);
   const dir = await mkdtemp(join(tmpdir(), 'chat-mcp-relocated space-'));

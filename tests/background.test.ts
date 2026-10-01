@@ -107,6 +107,39 @@ test('sending from another task restores the hidden Chrome window before input',
   assert.equal(f.sockets[0].replies.at(-1).value?.clicked, true);
 });
 
+test('preparation wakes a hidden renderer before asking it for the first snapshot', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
+  f.setSnapshot({ url: 'https://chatgpt.com/c/old', ordinary: true, draft: 'keep this draft', generating: false, messages: [] });
+  f.setReply(msg => msg.command === 'snapshot' && !f.windows.length
+    ? { error: { code: 'CONTENT_UNAVAILABLE', message: 'Renderer is paused until its window is restored' } } : undefined);
+  await f.sockets[0].signal({ id: 'prepare', command: 'snapshot', args: { activate: true } });
+  assert.equal(f.sockets[0].replies.at(-1).value?.ordinary, true);
+  assert.equal(f.sockets[0].replies.at(-1).value?.draft, 'keep this draft');
+  assert.deepEqual(f.windows, [{ id: 7, state: 'normal', focused: true }]);
+  assert.equal(f.updated.some(change => change.url), false);
+});
+
+test('a preparation wake rechecks its deadline before reading the renderer', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open(); f.sent.length = 0;
+  f.onFocus(() => { f.clock.now += 1_001; });
+  await f.sockets[0].signal({ id: 'expired-wake', command: 'snapshot', args: { activate: true }, expiresAt: f.clock.now + 1_000 });
+  assert.equal(f.sockets[0].replies.at(-1).error.code, 'COMMAND_EXPIRED');
+  assert.deepEqual(f.sent, []);
+});
+
+test('a response recovery wake cannot reveal a different conversation', async () => {
+  const f = await fixture(); await f.call('connect', 1); f.sockets[0].open(); f.updated.length = 0;
+  f.setSnapshot({ url: 'https://chatgpt.com/c/old', ordinary: true, draft: 'keep', generating: false, messages: [] });
+  const binding = { url: 'https://chatgpt.com/c/owned', baseline: [], marker: '[owned]', userId: 'u1' };
+  await f.sockets[0].signal({ id: 'recover', command: 'snapshot', args: { binding, activate: true } });
+  assert.deepEqual(f.windows, []);
+  assert.deepEqual(f.updated, []);
+  assert.equal(f.sockets[0].replies.at(-1).value.draft, 'keep');
+  binding.url = 'https://chatgpt.com/c/old';
+  await f.sockets[0].signal({ id: 'owned', command: 'snapshot', args: { binding, activate: true } });
+  assert.deepEqual(f.windows, [{ id: 7, state: 'normal', focused: true }]);
+});
+
 test('a safe new command restores a minimized window before navigating', async () => {
   const f = await fixture(); await f.call('connect', 1); f.sockets[0].open();
   f.updated.length = 0; f.updates.length = 0;

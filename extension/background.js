@@ -62,6 +62,19 @@ function connect() {
       if (!current()) return;
       checkDeadline();
       if (!isChat(tab)) throw Error('Connected tab left ChatGPT.');
+      // Preparation must wake the renderer before waiting for a page response.
+      if (msg.command === 'snapshot' && msg.args?.activate === true &&
+          (!msg.args.binding || tab.url === msg.args.binding.url)) {
+        await chrome.tabs.update(target, { active: true });
+        if (!current()) return;
+        checkDeadline();
+        const window = await chrome.windows.get(tab.windowId);
+        if (!current()) return;
+        checkDeadline();
+        await chrome.windows.update(tab.windowId, { ...(window.state === 'minimized' ? { state: 'normal' } : {}), focused: true });
+        if (!current()) return;
+        checkDeadline();
+      }
       let before = await snapshot(target);
       if (!current()) return;
       checkDeadline();

@@ -76,3 +76,75 @@ test('reasoning configuration forwards the requested effort and binding to the b
   await adapter.configure(binding);
   assert.deepEqual(calls[1], { command: 'configure', args: { binding, reasoning_effort: undefined } });
 });
+
+test('a cold snapshot recovers a transient connection and wakes the selected tab', async () => {
+  const adapter = new ExtensionAdapter();
+  const calls: any[] = [];
+  (adapter as any).rpc = async (command: any) => {
+    calls.push(command);
+    if (calls.length === 1) throw new Fault('BRIDGE_TIMEOUT', 'Hidden renderer');
+    return home;
+  };
+  assert.equal((await adapter.snapshot()).ordinary, true);
+  assert.deepEqual(calls.map(call => call.args?.activate), [undefined, true]);
+  assert.ok(calls.every(call => call.command === 'snapshot'));
+});
+
+test('an owned response snapshot can wake a renderer paused after preparation', async () => {
+  const adapter = new ExtensionAdapter();
+  const binding = { url: home.url + 'c/owned', baseline: [], marker: '[owned]', userId: 'u1' };
+  const calls: any[] = [];
+  (adapter as any).rpc = async (command: any) => {
+    calls.push(command);
+    if (calls.length === 1) throw new Fault('BRIDGE_TIMEOUT', 'Renderer paused during generation');
+    return home;
+  };
+  await adapter.snapshot(binding);
+  assert.deepEqual(calls.map(call => call.args?.activate), [undefined, true]);
+  assert.ok(calls.every(call => call.args.binding === binding));
+});
+
+test('preparation requests activation on its first snapshot', async () => {
+  const adapter = new ExtensionAdapter();
+  (adapter as any).rpc = async (command: any) => {
+    assert.equal(command.command, 'snapshot');
+    assert.equal(command.args.activate, true);
+    return home;
+  };
+  assert.equal((await adapter.prepare()).ordinary, true);
+});
+
+test('reasoning preparation retries a lost acknowledgement and a still-running predecessor', async () => {
+  const adapter = new ExtensionAdapter();
+  const calls: any[] = [];
+  const binding = { url: home.url, baseline: [], marker: '[retry-configure]' };
+  (adapter as any).rpc = async (command: any) => {
+    calls.push(command);
+    if (calls.length === 1) throw new Fault('BRIDGE_TIMEOUT', 'Lost acknowledgement');
+    if (calls.length === 2) throw new Fault('BUSY', 'Previous configuration is finishing');
+    return { ...home, reasoning: { effort: 'high', raw: 'high', label: 'High' } };
+  };
+  assert.equal((await adapter.configure(binding, 'high')).reasoning?.raw, 'high');
+  assert.equal(calls.length, 3);
+  assert.ok(calls.every(call => call.command === 'configure' && call.args.binding === binding && call.args.reasoning_effort === 'high'));
+});
+
+test('safe recovery is bounded, preserves ownership checks, and never retries Send', async t => {
+  t.mock.timers.enable({ apis: ['Date'] });
+  const adapter = new ExtensionAdapter();
+  const binding = { url: home.url, baseline: [], marker: '[bounded]' };
+  let calls = 0;
+  (adapter as any).rpc = async () => { calls++; t.mock.timers.tick(10_000); throw new Fault('BRIDGE_UNAVAILABLE', 'Offline'); };
+  await assert.rejects(adapter.configure(binding, 'high'), (e: any) => e.code === 'BRIDGE_UNAVAILABLE');
+  assert.equal(calls, 3);
+  for (const code of ['PRO_FORBIDDEN', 'REASONING_MISMATCH', 'CONVERSATION_CHANGED', 'BRIDGE_CONFLICT', 'BUSY']) {
+    calls = 0;
+    (adapter as any).rpc = async () => { calls++; throw new Fault(code, 'Must fail closed'); };
+    await assert.rejects(adapter.configure(binding, 'high'), (e: any) => e.code === code);
+    assert.equal(calls, 1);
+  }
+  calls = 0;
+  (adapter as any).rpc = async () => { calls++; throw new Fault('BRIDGE_TIMEOUT', 'Send may have been clicked'); };
+  await assert.rejects(adapter.send('do not resend', binding), (e: any) => e.code === 'BRIDGE_TIMEOUT');
+  assert.equal(calls, 1);
+});

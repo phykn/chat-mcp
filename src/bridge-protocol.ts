@@ -13,7 +13,7 @@ const binding = z.object({
 const reasoningEffort = z.enum(['low', 'medium', 'high', 'xhigh']);
 const deadline = z.number().finite().optional();
 export const commandSchema = z.discriminatedUnion('command', [
-  z.object({ command: z.literal('snapshot'), args: z.object({ binding }).optional(), deadline }),
+  z.object({ command: z.literal('snapshot'), args: z.object({ binding: binding.optional(), activate: z.boolean().optional() }).optional(), deadline }),
   z.object({ command: z.literal('new'), args: z.object({ expectedUrl: z.string() }), deadline }),
   z.object({ command: z.literal('configure'), args: z.object({ binding, reasoning_effort: reasoningEffort.optional() }), deadline }),
   z.object({ command: z.literal('send'), args: z.object({ text: z.string(), binding }), deadline }),

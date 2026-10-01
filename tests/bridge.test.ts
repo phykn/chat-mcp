@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
@@ -41,6 +41,34 @@ test('concurrent automatic starts reuse one bridge and a stopped bridge restarts
 test('automatic start reports missing setup without spawning a bridge', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'chat-mcp-unconfigured-'));
   await assert.rejects(ensureBridge(dir, await freePort()), (e: any) => e.code === 'SETUP_REQUIRED');
+});
+
+test('a shared bridge does not keep the first clients working directory busy', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'chat-mcp-shared-dir-'));
+  const cwd = await mkdtemp(join(tmpdir(), 'chat-mcp-first-client-')), port = await freePort();
+  const token = 'f'.repeat(64);
+  await writeFile(join(dir, 'bridge-token'), token);
+  const module = pathToFileURL(join(process.cwd(), 'dist/core/bridge-process.js')).href;
+  const child = spawn(process.execPath, ['--input-type=module', '-e',
+    `import { ensureBridge } from ${JSON.stringify(module)};
+     const { url, token } = await ensureBridge(${JSON.stringify(relative(cwd, dir))}, ${port});
+     const health = await (await fetch(url + '/health', { headers: { Authorization: 'Bearer ' + token } })).json();
+     console.log(health.pid);`], { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  let stdout = '', stderr = '', pid: number | undefined;
+  child.stdout.on('data', chunk => { stdout += chunk; });
+  child.stderr.on('data', chunk => { stderr += chunk; });
+  try {
+    const [code] = await once(child, 'exit');
+    assert.equal(code, 0, stderr);
+    pid = Number(stdout.trim()); assert.ok(Number.isInteger(pid) && pid > 0);
+    await rmdir(cwd);
+    const h = await (await fetch(`http://127.0.0.1:${port}/health`, { headers: { Authorization: `Bearer ${token}` } })).json() as any;
+    assert.equal(h.pid, pid, 'the shared bridge survives after its first client and folder disappear');
+  } finally {
+    if (pid) process.kill(pid);
+    if (child.exitCode === null) child.kill();
+    await rmdir(cwd).catch(e => { if (e.code !== 'ENOENT') throw e; });
+  }
 });
 
 test('cold-start readiness waits for the extension without dispatching or retrying a command', async () => {

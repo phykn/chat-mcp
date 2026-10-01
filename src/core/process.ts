@@ -28,7 +28,7 @@ async function identify(pid: number): Promise<string | undefined> {
     const { stdout } = process.platform === 'win32'
       ? await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
         `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`],
-      { windowsHide: true, timeout: 5_000 })
+      { windowsHide: true, timeout: 15_000 })
       : await exec('/bin/ps', ['-p', String(pid), '-o', 'lstart='],
         { timeout: 5_000, env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' } });
     return stdout.trim() || undefined;

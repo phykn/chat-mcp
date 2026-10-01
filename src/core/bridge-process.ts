@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { open, readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { dataDir, bridgeScript } from '../config.js';
 import { Fault } from './types.js';
 import { bridgePort, bridgeProtocol, bridgeUrl } from '../bridge-protocol.js';
 
 export async function ensureBridge(dir = dataDir, port = bridgePort, waitForExtension = false) {
+  dir = resolve(dir);
   let token: string;
   try { token = (await readFile(join(dir, 'bridge-token'), 'utf8')).trim(); }
   catch (e: any) { if (e.code === 'ENOENT') throw new Fault('SETUP_REQUIRED', 'Run npm run setup first.'); throw e; }
@@ -42,7 +43,7 @@ export async function ensureBridge(dir = dataDir, port = bridgePort, waitForExte
   try {
     const child = spawn(process.execPath, [bridgeScript], {
       env: { ...process.env, CHAT_MCP_DATA_DIR: dir, CHAT_MCP_BRIDGE_PORT: String(port) },
-      detached: true, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
+      cwd: dir, detached: true, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
     });
     child.on('error', e => { launchError = e; });
     child.unref();
