@@ -3,8 +3,8 @@ import { open, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { dataDir, bridgeScript } from '../config.js';
-import { Fault } from './types.js';
-import { bridgePort, bridgeProtocol, bridgeUrl } from '../bridge-protocol.js';
+import { Fault } from '../core/types.js';
+import { bridgePort, bridgeProtocol, bridgeUrl } from './protocol.js';
 
 export async function ensureBridge(dir = dataDir, port = bridgePort, waitForExtension = false) {
   dir = resolve(dir);

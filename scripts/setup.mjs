@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import { access, cp, mkdir, readFile, readdir, writeFile, rename, open, unlink } from 'node:fs/promises';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { preparePlugin, installPlugin } from './plugin.mjs';
+import { prepareExtension } from './extension.mjs';
 
 export async function configure({ root, codexHome, dataDir, home = homedir(), node = process.execPath, install = installPlugin }) {
   const { parse } = await import('smol-toml');
@@ -38,22 +39,7 @@ export async function configure({ root, codexHome, dataDir, home = homedir(), no
     await writeFile(tokenFile, token, { flag: 'wx', mode: 0o600 });
   }
   if (!/^[a-f0-9]{64}$/.test(token)) throw Error('Invalid existing bridge token. Inspect it before running setup.');
-  const extensionDir = join(dataDir, 'extension');
-  await mkdir(extensionDir, { recursive: true });
-  const digest = createHash('sha256');
-  for (const file of ['manifest.json', 'background.js', 'popup.html', 'popup.js', 'content.js']) {
-    digest.update(await readFile(join(root, 'extension', file)));
-    await cp(join(root, 'extension', file), join(extensionDir, file));
-  }
-  const revision = digest.digest('hex');
-  const extensionConfig = `export const token = ${JSON.stringify(token)};\nexport const revision = ${JSON.stringify(revision)};\n`;
-  await writeFile(join(extensionDir, 'config.js'), extensionConfig, { mode: 0o600 });
-  // Keep an already-loaded extension from the old checkout location usable during migration.
-  const legacyConfig = join(root, 'extension', 'config.js');
-  try {
-    if ((await readFile(legacyConfig, 'utf8')).includes(`export const token = ${JSON.stringify(token)};`))
-      await writeFile(legacyConfig, extensionConfig, { mode: 0o600 });
-  } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const { extensionDir, revision } = await prepareExtension(root, dataDir, token);
   const plugin = await preparePlugin({ root, home, server });
   await install(plugin.selector, codexHome);
   // Publish only after all extension files and the plugin have been installed.

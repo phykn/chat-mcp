@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
 import { configure } from '../scripts/setup.mjs';
+import { extensionFiles } from '../scripts/extension.mjs';
+import { build } from 'esbuild';
 import { diagnose, checkMcp } from '../scripts/doctor.mjs';
 import { finishSetup } from '../scripts/onboarding.mjs';
 import { PassThrough } from 'node:stream';
@@ -20,7 +22,7 @@ async function fixture() {
   await copyFile(new URL('../.mcp.json', import.meta.url), join(root, '.mcp.json'));
   await cp(new URL('../skills', import.meta.url), join(root, 'skills'), { recursive: true });
   await cp(new URL('../dist/plugin', import.meta.url), join(root, 'dist', 'plugin'), { recursive: true });
-  for (const file of ['manifest.json', 'background.js', 'popup.html', 'popup.js', 'content.js'])
+  for (const file of extensionFiles)
     await copyFile(new URL('../extension/' + file, import.meta.url), join(root, 'extension', file));
   const install = async (selector: string) => {
     assert.equal(selector, 'chat-mcp@personal');
@@ -65,6 +67,18 @@ test('fresh plugin setup registers one catalog entry and keeps credentials out o
   assert.match(await readFile(join(plugin.extensionDir, 'config.js'), 'utf8'), /^export const token = "[a-f0-9]{64}";/);
   await configure(options);
   assert.equal(JSON.parse(await readFile(plugin.catalog, 'utf8')).plugins.length, 1);
+});
+
+test('setup ships background imports and updates the revision when page commands change', async () => {
+  const options = await fixture(), plugin = await configure(options);
+  await build({ entryPoints: [join(plugin.extensionDir, 'background.js')], bundle: true,
+    write: false, format: 'esm', logLevel: 'silent' });
+  const revision = await readFile(join(options.dataDir, 'extension-revision'), 'utf8');
+  const file = join(options.root, 'extension', 'page.js');
+  await writeFile(file, (await readFile(file, 'utf8')) + '\n// Updated page commands\n');
+  await configure(options);
+  assert.notEqual(await readFile(join(options.dataDir, 'extension-revision'), 'utf8'), revision);
+  assert.match(await readFile(join(plugin.extensionDir, 'page.js'), 'utf8'), /Updated page commands/);
 });
 
 test('generated plugin versions sort after the existing calendar-stamped cache', async t => {

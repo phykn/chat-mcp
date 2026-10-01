@@ -1,7 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { Fault, type Adapter, type Binding, type Snapshot, type ReasoningEffort } from '../core/types.js';
-import { ensureBridge } from '../core/bridge-process.js';
-import { commandTimeoutFor, type Command, type CommandResults, type Reply } from '../bridge-protocol.js';
+import { ensureBridge } from '../bridge/process.js';
+import { commandTimeoutFor, type Command, type CommandResults, type Reply } from '../bridge/protocol.js';
 import { isConnectionError } from '../core/request.js';
 
 export class ExtensionAdapter implements Adapter {

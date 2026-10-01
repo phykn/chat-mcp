@@ -2,6 +2,7 @@ import { access, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { extensionFiles } from './extension.mjs';
 
 export async function checkMcp(dir, server) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
@@ -54,7 +55,7 @@ export async function diagnose({ home = homedir(),
   const dataDir = resolve(server.env?.CHAT_MCP_DATA_DIR || process.env.CHAT_MCP_DATA_DIR || join(home, '.chat-mcp'));
   const extensionDir = join(dataDir, 'extension');
   try {
-    for (const path of ['manifest.json', 'background.js', 'popup.html', 'popup.js', 'content.js', 'config.js'])
+    for (const path of [...extensionFiles, 'config.js'])
       await access(join(extensionDir, path));
     await access(join(dataDir, 'bridge-token'));
   } catch (e) {

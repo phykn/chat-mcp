@@ -4,7 +4,8 @@ import { mkdtemp, writeFile, rename, rm, mkdir, symlink } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { collectAsk, collectReview, contextMetadata, safePath } from '../src/context/collect.js';
+import { collectAsk, collectReview, contextMetadata } from '../src/context/collect.js';
+import { safePath } from '../src/context/files.js';
 import { maxInputLines } from '../src/core/text.js';
 
 test('line-heavy context is rejected before browser preparation even below the byte limit', async () => {
@@ -54,6 +55,18 @@ test('branch context uses committed HEAD, not index or disk', async () => {
   await writeFile(join(root, 'demo.py'), 'DISK_VERSION\n'); git(root, 'add', '.');
   const m = await collectReview({ repo_path: root, scope: 'branch', base_ref: base });
   assert.match(m.prompt, /1: COMMIT_VERSION/); assert.doesNotMatch(m.prompt, /DISK_VERSION/);
+});
+
+for (const scope of ['staged', 'branch'] as const) test(`${scope} context preserves valid UTF-8 replacement characters and omits invalid UTF-8`, async () => {
+  const root = await repo(), base = git(root, 'rev-parse', 'HEAD').trim();
+  await writeFile(join(root, 'demo.py'), '\ufeffVALID_UTF8_\ufffd\n');
+  await writeFile(join(root, 'invalid.txt'), Buffer.from([0xff, 0xfe]));
+  git(root, 'add', '.');
+  if (scope === 'branch') git(root, 'commit', '-qm', 'UTF-8 inputs');
+  const material = await collectReview({ repo_path: root, scope, base_ref: base });
+  assert.deepEqual(material.files, ['demo.py']);
+  assert.match(material.prompt, /1: \ufeffVALID_UTF8_\ufffd/);
+  assert.equal(material.omitted[0].path, 'invalid.txt');
 });
 test('rename, deletion, unicode untracked and credential exclusions', async () => {
   const root = await repo();

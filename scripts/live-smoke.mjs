@@ -6,7 +6,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { Store } from '../dist/core/store.js';
-import { ensureBridge } from '../dist/core/bridge-process.js';
+import { ensureBridge } from '../dist/bridge/process.js';
 
 if (!process.argv.includes('--live')) throw Error('Use --live: this test sends prompts to the connected ChatGPT account.');
 const server = resolve(process.env.CHAT_MCP_TEST_SERVER || 'dist/main.js');

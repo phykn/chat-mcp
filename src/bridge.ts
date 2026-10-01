@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { dataDir } from './config.js';
-import { bridgePort, bridgeProtocol, commandSchema, commandTimeoutFor, failure, type Command, type Reply } from './bridge-protocol.js';
+import { bridgePort, bridgeProtocol, commandSchema, commandTimeoutFor, failure, type Command, type Reply } from './bridge/protocol.js';
 import type { AddressInfo } from 'node:net';
 
 const token = (await readFile(join(dataDir, 'bridge-token'), 'utf8')).trim();

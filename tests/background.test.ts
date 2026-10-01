@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
+import { build } from 'esbuild';
+
+const source = build({ entryPoints: ['extension/background.js'], bundle: true, write: false,
+  format: 'esm', external: ['./config.js'], logLevel: 'silent' }).then(result =>
+    result.outputFiles[0].text.replace(/import \{ token, revision \} from ["']\.\/config\.js["'];/,
+      "const token = 'fixture', revision = 'fixture';"));
 
 async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url: 'https://chatgpt.com/c/old' }]) {
   const sent: number[] = [], injected: number[] = [], updated: any[] = [], sockets: Socket[] = [];
@@ -49,8 +54,7 @@ async function fixture(local: any = {}, session: any = {}, tabs = [{ id: 1, url:
       onRemoved: event('removed'), onUpdated: event('updated'), onReplaced: event('replaced'),
     },
   };
-  const source = (await readFile('extension/background.js', 'utf8')).replace("import { token, revision } from './config.js';", "const token = 'fixture', revision = 'fixture';");
-  runInNewContext(source, { chrome, WebSocket: Socket, Date: class extends Date { static now() { return clock.now; } },
+  runInNewContext(await source, { chrome, WebSocket: Socket, Date: class extends Date { static now() { return clock.now; } },
     setInterval: (fn: () => void) => { intervals.set(++intervalId, fn); return intervalId; },
     clearInterval: (id: number) => intervals.delete(id),
     setTimeout: (fn: () => void, ms: number) => { if (ms === 200) { clock.now += ms; queueMicrotask(fn); } return 1; }, clearTimeout() {} });

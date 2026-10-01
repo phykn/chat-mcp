@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Snapshot } from './core/types.js';
+import type { Snapshot } from '../core/types.js';
 
 export const bridgePort = 9234;
 export const bridgeProtocol = 4;

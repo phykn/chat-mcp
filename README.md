@@ -102,7 +102,7 @@ For unattended setup, use `npm run setup -- --non-interactive`. It skips windows
 
 ## Source layout
 
-`src/core` owns request state, persistence, hashing, and shared reasoning definitions. `src/browser` contains page DOM and reasoning controls; `src/adapters/extension.ts` connects the request runner to the local bridge. `extension` owns Chrome tab and connection lifecycle, while `src/context` collects review inputs. The MCP entrypoint and bridge remain `src/main.ts` and `src/bridge.ts`.
+`src/core` owns request state, persistence, hashing, and shared reasoning definitions. `src/bridge` owns the bridge protocol and process startup; `src/adapters/extension.ts` connects the request runner to that transport. `src/browser` contains page DOM and reasoning controls. `extension/background.js` owns Chrome tab and connection lifecycle; `extension/page.js` executes commands and recovers owned responses. `src/context/collect.ts` assembles review inputs using the file access rules in `files.ts` and Git reads in `git.ts`. `scripts/extension.mjs` owns the extension files copied by setup and checked by doctor. The MCP and bridge entrypoints remain `src/main.ts` and `src/bridge.ts`.
 
 ## Usage notice
 

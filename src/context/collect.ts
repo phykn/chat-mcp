@@ -1,72 +1,11 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { readFile, realpath, lstat } from 'node:fs/promises';
-import { resolve, relative, isAbsolute, sep } from 'node:path';
+import { realpath, lstat } from 'node:fs/promises';
+import { resolve } from 'node:path';
 import { Fault, type Material } from '../core/types.js';
 import { hash } from '../core/hash.js';
 import { maxBytes } from '../config.js';
 import { maxInputLines } from '../core/text.js';
-
-const exec = promisify(execFile);
-async function git(repo: string, args: string[]) {
-  try {
-    const result = await exec('git', ['-c', 'core.quotePath=false', ...args], {
-      cwd: repo, encoding: 'utf8', maxBuffer: 2_000_000, timeout: 15_000,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' }, windowsHide: true,
-    });
-    return result.stdout;
-  } catch (e: any) {
-    throw new Fault(e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' ? 'CONTEXT_TOO_LARGE' : 'GIT_ERROR',
-      'Git collection failed; verify repository, HEAD and base_ref. No review scope was changed.');
-  }
-}
-export function safePath(path: string) {
-  const p = path.replaceAll('\\', '/');
-  const normalized = p.split('/').filter(s => s && s !== '.').join('/') || '.';
-  if (!p || isAbsolute(p) || /^[a-z]:/i.test(normalized) || p.split('/').some(s => s === '..') || p.includes('\0'))
-    throw new Fault('INVALID_PATH', `Repository-relative file path required: ${path}`);
-  return normalized;
-}
-export function exclusion(path: string): string | undefined {
-  if (/(^|\/)(node_modules|vendor|dist|coverage|\.git|\.venv|\.chat-mcp)(\/|$)/i.test(path) || /^build(\/|$)/i.test(path)) return 'generated/dependency/internal';
-  if (/^extension\/config\.js$|(^|\/)bridge-token$/i.test(path)) return 'local pairing credential';
-  if (/(^|\/)(\.env(?:\..*)?|\.npmrc|\.pypirc|credentials(?:\..*)?|secrets?(?:\..*)?|id_rsa|id_ed25519)$/i.test(path) ||
-      /\.(pem|p12|pfx|key|keystore)$/i.test(path)) return 'credential file';
-  if (/\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|exe|dll|woff2?|mp4|mp3|sqlite|db|lock|min\.js|map)$/i.test(path) || /(^|\/)package-lock\.json$/.test(path)) return 'binary/generated';
-}
-function decode(bytes: Buffer) {
-  if (bytes.includes(0)) return undefined;
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { return undefined; }
-}
-async function disk(root: string, path: string) {
-  const full = resolve(root, path);
-  try {
-    if ((await lstat(full)).isSymbolicLink()) return undefined;
-    const actual = await realpath(full), rel = relative(root, actual);
-    if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) throw new Fault('PATH_ESCAPE', `Path escapes repository: ${path}`);
-    if (exclusion(rel.split(sep).join('/'))) return undefined;
-    const stat = await lstat(actual);
-    if (!stat.isFile()) return undefined;
-    if (stat.size > maxBytes) throw new Fault('CONTEXT_TOO_LARGE', `File exceeds ${maxBytes} bytes: ${path}`,
-      { bytes: stat.size, byte_limit: maxBytes - 100, line_limit: maxInputLines, files: [path], omitted: [] });
-    return decode(await readFile(actual));
-  } catch (e: any) { if (e.code === 'ENOENT') return null; throw e; }
-}
-async function gitFile(root: string, path: string, ref: string | undefined, files: string[]) {
-  const entry = ref
-    ? await git(root, ['ls-tree', '-z', ref, '--', `:(literal)${path}`])
-    : await git(root, ['ls-files', '--stage', '-z', '--', `:(literal)${path}`]);
-  if (!ref && entry && (entry.split('\0').filter(Boolean).length !== 1 || !/^[0-9]+ [a-f0-9]+ 0\t/.test(entry)))
-    throw new Fault('UNMERGED_PATH', `Resolve index conflicts before review: ${path}`);
-  if (!entry) return null;
-  if (!entry.startsWith('100644 ') && !entry.startsWith('100755 ')) return undefined;
-  const blob = ref ? entry.split(' ')[2].split('\t')[0] : entry.split(' ')[1];
-  const size = Number((await git(root, ['cat-file', '-s', blob])).trim());
-  if (size > maxBytes) throw new Fault('CONTEXT_TOO_LARGE', `File exceeds limit: ${path}`,
-    { bytes: size, byte_limit: maxBytes - 100, line_limit: maxInputLines, files, omitted: [] });
-  const raw = await git(root, ['cat-file', 'blob', blob]);
-  return raw.includes('\0') || raw.includes('\ufffd') ? undefined : raw;
-}
+import { safePath, exclusion, disk } from './files.js';
+import { git, gitFile, isIgnored } from './git.js';
 function fenced(text: string) {
   const length = Math.max(3, ...(text.match(/`+/g) || []).map(run => run.length + 1));
   const fence = '`'.repeat(length);
@@ -152,13 +91,7 @@ export async function collectReview(input: ReviewInput, options: { preview?: boo
           for (const item of ignored) addIgnored(item.replace(/\/$/, ''));
         }
         if (path === '.' || paths.some(p => p === path || p.startsWith(path + '/'))) continue;
-        try {
-          await exec('git', ['check-ignore', '-q', '--', path], { cwd: root, windowsHide: true,
-            timeout: 15_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } });
-          addIgnored(path);
-        } catch (e: any) {
-          if (e.code !== 1) throw new Fault('GIT_ERROR', 'Git ignore check failed; no review scope was changed.');
-        }
+        if (await isIgnored(root, path)) addIgnored(path);
       }
     }
     for (const path of paths) {

@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { pathToFileURL } from 'node:url';
 import WebSocket from 'ws';
 import { createServer } from 'node:net';
-import { ensureBridge } from '../dist/core/bridge-process.js';
+import { ensureBridge } from '../dist/bridge/process.js';
 
 async function freePort() {
   const server = createServer();
@@ -48,7 +48,7 @@ test('a shared bridge does not keep the first clients working directory busy', a
   const cwd = await mkdtemp(join(tmpdir(), 'chat-mcp-first-client-')), port = await freePort();
   const token = 'f'.repeat(64);
   await writeFile(join(dir, 'bridge-token'), token);
-  const module = pathToFileURL(join(process.cwd(), 'dist/core/bridge-process.js')).href;
+  const module = pathToFileURL(join(process.cwd(), 'dist/bridge/process.js')).href;
   const child = spawn(process.execPath, ['--input-type=module', '-e',
     `import { ensureBridge } from ${JSON.stringify(module)};
      const { url, token } = await ensureBridge(${JSON.stringify(relative(cwd, dir))}, ${port});
